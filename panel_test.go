@@ -31,3 +31,18 @@ func TestStateIsStoredPrivate(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestAdminPasswordLengthPolicy(t *testing.T) {
+	if validAdminPasswordLength([]byte("1234567")) {
+		t.Fatal("accepted a password shorter than 8 bytes")
+	}
+	if !validAdminPasswordLength([]byte("12345678")) {
+		t.Fatal("rejected the 8-byte minimum password")
+	}
+	if !validAdminPasswordLength(make([]byte, 1024)) {
+		t.Fatal("rejected the maximum 1024-byte password")
+	}
+	if validAdminPasswordLength(make([]byte, 1025)) {
+		t.Fatal("accepted a password longer than 1024 bytes")
+	}
+}

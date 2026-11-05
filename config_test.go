@@ -226,3 +226,92 @@ func TestValidateSettingsRejectsUnsafeValues(t *testing.T) {
 		t.Fatal("accepted unsafe XHTTP path")
 	}
 }
+
+func TestOfficialInboundProtocolChoicesAndConfigGeneration(t *testing.T) {
+	want := []string{"tunnel", "http", "shadowsocks", "socks", "trojan", "vless", "vmess", "wireguard", "hysteria", "masque", "tun"}
+	if len(supportedInboundProtocols) != len(want) {
+		t.Fatalf("protocol choices = %d, want %d", len(supportedInboundProtocols), len(want))
+	}
+	for i, protocol := range want {
+		if supportedInboundProtocols[i] != protocol {
+			t.Fatalf("protocol choice %d = %q, want %q", i, supportedInboundProtocols[i], protocol)
+		}
+		s := testState(t)
+		s.Settings.Protocol = protocol
+		s.Settings.ProtocolSettings = `{"customMarker":"kept"}`
+		s.Settings.ProtocolStreamSettings = `{"network":"tcp"}`
+		if err := validateSettings(s.Settings); err != nil {
+			t.Fatalf("%s settings rejected: %v", protocol, err)
+		}
+		cfg, err := buildXrayConfig(s)
+		if err != nil {
+			t.Fatalf("%s config failed: %v", protocol, err)
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal(cfg, &decoded); err != nil {
+			t.Fatalf("%s config is not JSON: %v", protocol, err)
+		}
+		inbound := decoded["inbounds"].([]any)[0].(map[string]any)
+		if inbound["protocol"] != protocol {
+			t.Fatalf("generated protocol = %v, want %s", inbound["protocol"], protocol)
+		}
+		if protocol == "tun" {
+			if _, ok := inbound["port"]; ok {
+				t.Fatal("TUN inbound unexpectedly has a listening port")
+			}
+			if _, ok := inbound["listen"]; ok {
+				t.Fatal("TUN inbound unexpectedly has a listen address")
+			}
+		} else if inbound["port"].(float64) != float64(s.Settings.InternalPort) || inbound["listen"] != "0.0.0.0" {
+			t.Fatalf("%s listener fields = %#v", protocol, inbound)
+		}
+		if protocol != "vless" {
+			if inbound["settings"].(map[string]any)["customMarker"] != "kept" {
+				t.Fatalf("%s settings JSON was not preserved", protocol)
+			}
+			if inbound["streamSettings"].(map[string]any)["network"] != "tcp" {
+				t.Fatalf("%s streamSettings JSON was not preserved", protocol)
+			}
+			if links := makeVLESSLinks(s, s.Users[0]); len(links) != 0 {
+				t.Fatalf("%s unexpectedly generated VLESS links: %+v", protocol, links)
+			}
+		}
+	}
+}
+
+func TestLegacyProtocolDefaultsToVLESS(t *testing.T) {
+	s := testState(t)
+	s.Settings.Protocol = ""
+	if effectiveInboundProtocol(s.Settings) != "vless" {
+		t.Fatal("legacy settings without protocol did not default to VLESS")
+	}
+	if err := validateSettings(s.Settings); err != nil {
+		t.Fatalf("legacy settings rejected: %v", err)
+	}
+	if links := makeVLESSLinks(s, s.Users[0]); len(links) != 1 {
+		t.Fatalf("legacy VLESS links = %d, want 1", len(links))
+	}
+}
+
+func TestCustomInboundSettingsMustBeJSONObjects(t *testing.T) {
+	s := testState(t)
+	s.Settings.Protocol = "socks"
+	s.Settings.ProtocolSettings = `[]`
+	if err := validateSettings(s.Settings); err == nil {
+		t.Fatal("accepted an array instead of protocol settings object")
+	}
+	s.Settings.ProtocolSettings = `{invalid`
+	if err := validateSettings(s.Settings); err == nil {
+		t.Fatal("accepted malformed protocol settings JSON")
+	}
+	s.Settings.ProtocolSettings = `{}`
+	s.Settings.ProtocolStreamSettings = `null`
+	if err := validateSettings(s.Settings); err == nil {
+		t.Fatal("accepted null instead of stream settings object")
+	}
+	s.Settings.ProtocolStreamSettings = `{}`
+	s.Settings.Protocol = "not-an-xray-protocol"
+	if err := validateSettings(s.Settings); err == nil {
+		t.Fatal("accepted an unsupported inbound protocol")
+	}
+}

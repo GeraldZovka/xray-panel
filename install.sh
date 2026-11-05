@@ -9,7 +9,7 @@ PANEL_USER=xray-panel
 PANEL_UNIT=xray-panel.service
 XRAY_CONFIG=/usr/local/etc/xray/config.json
 XRAY_INSTALL_URL=https://github.com/XTLS/Xray-install/raw/main/install-release.sh
-REPO_URL=${XRAY_PANEL_REPO:-https://github.com/GeraldZovka/xray-panel.git}
+REPO_URL=${XRAY_PANEL_REPO:-https://github.com/GeraldZovka/xray-protocol-panel.git}
 GENERATED_PASSWORD=
 
 say(){ printf '\n==> %s\n' "$*"; }
@@ -141,7 +141,7 @@ ask_password(){
   read -r -s -p 'Password admin (kosong = buat acak): ' p1 || true; printf '\n'
   if [[ -z $p1 ]]; then GENERATED_PASSWORD=$(openssl rand -hex 24); p1=$GENERATED_PASSWORD
   else
-    (( ${#p1} >= 12 && ${#p1} <= 1024 )) || die 'Password admin harus 12–1024 karakter.'
+    (( ${#p1} >= 8 && ${#p1} <= 1024 )) || die 'Password admin harus 8–1024 karakter.'
     read -r -s -p 'Ulangi password admin: ' p2 || true; printf '\n'
     [[ $p1 == "$p2" ]] || die 'Password tidak sama.'
   fi

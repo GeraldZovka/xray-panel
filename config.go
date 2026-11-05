@@ -17,14 +17,17 @@ import (
 )
 
 type Settings struct {
-	PublicHost   string   `json:"publicHost"`
-	PublicPort   int      `json:"publicPort"`
-	NATMappings  []string `json:"natMappings,omitempty"`
-	InternalPort int      `json:"internalPort"`
-	Mode         string   `json:"mode"`
-	SNI          string   `json:"sni"`
-	Dest         string   `json:"dest"`
-	XHTTPPath    string   `json:"xhttpPath"`
+	PublicHost             string   `json:"publicHost"`
+	PublicPort             int      `json:"publicPort"`
+	NATMappings            []string `json:"natMappings,omitempty"`
+	InternalPort           int      `json:"internalPort"`
+	Protocol               string   `json:"protocol,omitempty"`
+	ProtocolSettings       string   `json:"protocolSettings,omitempty"`
+	ProtocolStreamSettings string   `json:"protocolStreamSettings,omitempty"`
+	Mode                   string   `json:"mode"`
+	SNI                    string   `json:"sni"`
+	Dest                   string   `json:"dest"`
+	XHTTPPath              string   `json:"xhttpPath"`
 }
 
 type User struct {
@@ -50,6 +53,42 @@ var shortIDRE = regexp.MustCompile(`^[0-9a-f]{2,16}$`)
 var portOnlyRE = regexp.MustCompile(`^[0-9]{1,5}$`)
 var nameRE = regexp.MustCompile(`^[^\x00-\x1f\x7f]{1,64}$`)
 var xhttpPathRE = regexp.MustCompile(`^/[A-Za-z0-9._~/-]{1,127}$`)
+
+var supportedInboundProtocols = []string{"tunnel", "http", "shadowsocks", "socks", "trojan", "vless", "vmess", "wireguard", "hysteria", "masque", "tun"}
+
+func effectiveInboundProtocol(s Settings) string {
+	if s.Protocol == "" {
+		return "vless"
+	}
+	return s.Protocol
+}
+
+func validInboundProtocol(protocol string) bool {
+	for _, supported := range supportedInboundProtocols {
+		if protocol == supported {
+			return true
+		}
+	}
+	return false
+}
+
+func decodeProtocolObject(raw, label string) (map[string]any, error) {
+	if len(raw) > 65536 {
+		return nil, fmt.Errorf("%s maksimal 65536 byte", label)
+	}
+	if strings.TrimSpace(raw) == "" {
+		return map[string]any{}, nil
+	}
+	var value any
+	if err := json.Unmarshal([]byte(raw), &value); err != nil {
+		return nil, fmt.Errorf("%s harus JSON valid: %w", label, err)
+	}
+	object, ok := value.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("%s harus berupa object JSON", label)
+	}
+	return object, nil
+}
 
 func validPort(p int) bool { return p >= 1 && p <= 65535 }
 
@@ -106,6 +145,18 @@ func effectiveNATMappings(s Settings) []string {
 func validateSettings(s Settings) error {
 	if !validPort(s.InternalPort) {
 		return errors.New("port harus antara 1 dan 65535")
+	}
+	protocol := effectiveInboundProtocol(s)
+	if !validInboundProtocol(protocol) {
+		return errors.New("protokol inbound Xray tidak didukung")
+	}
+	if protocol != "vless" {
+		if _, err := decodeProtocolObject(s.ProtocolSettings, "settings protokol"); err != nil {
+			return err
+		}
+		if _, err := decodeProtocolObject(s.ProtocolStreamSettings, "streamSettings protokol"); err != nil {
+			return err
+		}
 	}
 	mappings := effectiveNATMappings(s)
 	if len(mappings) > 8 {
@@ -198,8 +249,8 @@ func makeDefaultState(panelInternalPort, xrayInternalPort int, passwordHash stri
 	s := appState{
 		Schema: 1,
 		Settings: Settings{
-			InternalPort: xrayInternalPort,
-			Mode:         "tcp", SNI: "www.cloudflare.com", Dest: "www.cloudflare.com:443", XHTTPPath: "/" + path,
+			InternalPort: xrayInternalPort, Protocol: "vless",
+			Mode: "tcp", SNI: "www.cloudflare.com", Dest: "www.cloudflare.com:443", XHTTPPath: "/" + path,
 		},
 		Users: []User{}, AdminHash: passwordHash,
 		RealityPrivateKey: priv, RealityPublicKey: pub, RealityShortID: shortID,
@@ -219,6 +270,9 @@ func makeDefaultState(panelInternalPort, xrayInternalPort int, passwordHash stri
 func buildXrayConfig(s appState) ([]byte, error) {
 	if err := validateSettings(s.Settings); err != nil {
 		return nil, err
+	}
+	if protocol := effectiveInboundProtocol(s.Settings); protocol != "vless" {
+		return buildConfiguredInboundConfig(s, protocol)
 	}
 	if s.RealityPrivateKey == "" || !shortIDRE.MatchString(s.RealityShortID) {
 		return nil, errors.New("key REALITY internal tidak valid")
@@ -282,6 +336,9 @@ type publicLink struct {
 }
 
 func makeVLESSLinks(s appState, u User) []publicLink {
+	if effectiveInboundProtocol(s.Settings) != "vless" {
+		return nil
+	}
 	links := make([]publicLink, 0, len(effectiveNATMappings(s.Settings)))
 	for _, endpoint := range effectiveNATMappings(s.Settings) {
 		host, port, err := parseNATMapping(endpoint)
@@ -324,4 +381,32 @@ func validateUserName(name string) error {
 		return errors.New("nama harus 1–64 karakter, tanpa karakter kontrol atau spasi di ujung")
 	}
 	return nil
+}
+
+func buildConfiguredInboundConfig(s appState, protocol string) ([]byte, error) {
+	settings, err := decodeProtocolObject(s.Settings.ProtocolSettings, "settings protokol")
+	if err != nil {
+		return nil, err
+	}
+	streamSettings, err := decodeProtocolObject(s.Settings.ProtocolStreamSettings, "streamSettings protokol")
+	if err != nil {
+		return nil, err
+	}
+	inbound := map[string]any{"protocol": protocol, "settings": settings}
+	if protocol != "tun" {
+		inbound["listen"] = "0.0.0.0"
+		inbound["port"] = s.Settings.InternalPort
+	}
+	if len(streamSettings) > 0 {
+		inbound["streamSettings"] = streamSettings
+	}
+	cfg := map[string]any{
+		"log":      map[string]any{"loglevel": "warning"},
+		"inbounds": []any{inbound},
+		"outbounds": []any{
+			map[string]any{"protocol": "freedom", "tag": "direct"},
+			map[string]any{"protocol": "blackhole", "tag": "block"},
+		},
+	}
+	return json.MarshalIndent(cfg, "", "  ")
 }

@@ -26,11 +26,17 @@ import (
 )
 
 const (
-	defaultStatePath = "/var/lib/xray-panel/state.json"
-	sessionCookie    = "xray_panel_session"
-	sessionLifetime  = 12 * time.Hour
-	maxBodyBytes     = 2 << 20
+	defaultStatePath      = "/var/lib/xray-panel/state.json"
+	sessionCookie         = "xray_panel_session"
+	sessionLifetime       = 12 * time.Hour
+	maxBodyBytes          = 2 << 20
+	minAdminPasswordBytes = 8
+	maxAdminPasswordBytes = 1024
 )
+
+func validAdminPasswordLength(password []byte) bool {
+	return len(password) >= minAdminPasswordBytes && len(password) <= maxAdminPasswordBytes
+}
 
 type session struct {
 	CSRF    string
@@ -162,8 +168,8 @@ func initialize(args []string) error {
 	}
 	pw = bytes.TrimSuffix(pw, []byte("\n"))
 	pw = bytes.TrimSuffix(pw, []byte("\r"))
-	if len(pw) < 12 || len(pw) > 1024 {
-		return errors.New("password admin harus 12–1024 byte")
+	if !validAdminPasswordLength(pw) {
+		return errors.New("password admin harus 8–1024 byte")
 	}
 	hash, err := bcrypt.GenerateFromPassword(pw, 12)
 	for i := range pw {
@@ -631,8 +637,8 @@ func (s *server) changePassword(raw map[string]json.RawMessage) error {
 	if err := json.Unmarshal(raw["passwords"], &in); err != nil {
 		return errors.New("isian password tidak valid")
 	}
-	if len(in.New) < 12 || len(in.New) > 1024 {
-		return errors.New("password baru minimal 12 karakter")
+	if !validAdminPasswordLength([]byte(in.New)) {
+		return errors.New("password baru harus 8–1024 byte")
 	}
 	s.mu.Lock()
 	oldHash := s.state.AdminHash
