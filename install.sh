@@ -221,8 +221,8 @@ install_fresh(){
     install -d -o "$PANEL_USER" -g "$PANEL_USER" -m 0700 "$STATE_DIR"
     chown "$PANEL_USER":"$PANEL_USER" "$STATE_FILE";chmod 0600 "$STATE_FILE"
     build_app;ensure_xray;write_policy_files
-    /usr/local/bin/xray run -test -config "$XRAY_CONFIG"
-    systemctl restart xray.service;systemctl enable xray-panel.service >/dev/null;systemctl restart xray-panel.service
+    /usr/local/bin/xray-panel apply-state
+    systemctl enable xray-panel.service >/dev/null;systemctl restart xray-panel.service
     say 'Update selesai; konfigurasi, pengguna, key dan password dipertahankan.'
     return
   fi
@@ -249,7 +249,7 @@ install_fresh(){
   printf 'Mapping panel provider: gunakan hostname:port publik yang provider tetapkan -> %s/TCP.\n' "$PANEL_INTERNAL"
   printf 'Port internal Xray: %s/TCP; masukkan hostname:port publik yang provider tetapkan untuk Xray di Pengaturan panel setelah detail mapping tersedia.\n' "$XRAY_INTERNAL"
   printf 'Batas provider: 1 mapping panel + maksimal 8 endpoint Xray (9 total).\n'
-  printf 'Mode awal: VLESS + TCP + REALITY + Vision. UDP diblokir.\n'
+  printf 'Mode awal: VLESS + TCP + REALITY + Vision. UDP DNS port 53 langsung; UDP lainnya diblokir.\n'
   printf 'Port UFW internal yang diizinkan: %s/TCP dan %s/TCP (jika UFW aktif).\n' "$PANEL_INTERNAL" "$XRAY_INTERNAL"
   printf 'Periksa provider NAT: mapping panel ke %s/TCP dan setiap endpoint Xray ke %s/TCP; provider menetapkan hostname serta port publik acak, gunakan TCP.\n' "$PANEL_INTERNAL" "$XRAY_INTERNAL"
   if [[ -z $TLS_CERT ]]; then printf 'PERINGATAN: panel masih HTTP. Gunakan reverse proxy HTTPS atau sertifikat yang cocok dengan hostname panel dari provider.\n'; fi
@@ -258,9 +258,8 @@ update_existing(){
   require_root;check_platform;check_repo_url
   [[ -f $STATE_FILE && ! -L $STATE_FILE ]] || die 'Instalasi tidak ditemukan atau state bukan file reguler; periksa /var/lib/xray-panel/state.json.'
   install_deps;fetch_repo;build_app;ensure_xray;write_policy_files
-  say 'Memvalidasi config lama dan me-restart Xray.'
-  /usr/local/bin/xray run -test -config "$XRAY_CONFIG"
-  systemctl restart xray.service
+  say 'Membangun ulang config dari state, memvalidasi, mencadangkan, lalu menerapkan dengan rollback otomatis.'
+  /usr/local/bin/xray-panel apply-state
   systemctl restart xray-panel.service
   say 'Update selesai; state, pengguna, key, password, port dan pengaturan panel dipertahankan.'
 }

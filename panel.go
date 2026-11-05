@@ -65,17 +65,18 @@ type publicUser struct {
 	Links     []publicLink `json:"links"`
 }
 type publicState struct {
-	CSRF     string       `json:"csrf"`
-	Settings Settings     `json:"settings"`
-	Users    []publicUser `json:"users"`
-	Running  bool         `json:"running"`
-	Version  string       `json:"version"`
-	Uptime   string       `json:"uptime"`
-	CPU      string       `json:"cpu"`
-	Load     string       `json:"load"`
-	RAM      string       `json:"ram"`
-	Logs     string       `json:"logs"`
-	HTTPS    bool         `json:"https"`
+	CSRF     string           `json:"csrf"`
+	Settings Settings         `json:"settings"`
+	Inbounds []ManagedInbound `json:"inbounds"`
+	Users    []publicUser     `json:"users"`
+	Running  bool             `json:"running"`
+	Version  string           `json:"version"`
+	Uptime   string           `json:"uptime"`
+	CPU      string           `json:"cpu"`
+	Load     string           `json:"load"`
+	RAM      string           `json:"ram"`
+	Logs     string           `json:"logs"`
+	HTTPS    bool             `json:"https"`
 }
 type helperRequest struct {
 	Action    string `json:"action"`
@@ -95,17 +96,24 @@ type helperResponse struct {
 }
 
 type backupFile struct {
-	Schema            int      `json:"schema"`
-	Settings          Settings `json:"settings"`
-	Users             []User   `json:"users"`
-	RealityPrivateKey string   `json:"realityPrivateKey"`
-	RealityPublicKey  string   `json:"realityPublicKey"`
-	RealityShortID    string   `json:"realityShortId"`
+	Schema            int              `json:"schema"`
+	Settings          Settings         `json:"settings"`
+	Users             []User           `json:"users"`
+	Inbounds          []ManagedInbound `json:"inbounds,omitempty"`
+	RealityPrivateKey string           `json:"realityPrivateKey"`
+	RealityPublicKey  string           `json:"realityPublicKey"`
+	RealityShortID    string           `json:"realityShortId"`
 }
 
 func run() error {
 	if len(os.Args) > 1 && os.Args[1] == "init" {
 		return initialize(os.Args[2:])
+	}
+	if len(os.Args) > 1 && os.Args[1] == "apply-state" {
+		if len(os.Args) != 2 {
+			return errors.New("apply-state tidak menerima argumen tambahan")
+		}
+		return applyStoredState()
 	}
 	statePath := os.Getenv("XRAY_PANEL_STATE")
 	if statePath == "" {
@@ -152,6 +160,32 @@ func main() {
 	if err := run(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func applyStoredState() error {
+	statePath := os.Getenv("XRAY_PANEL_STATE")
+	if statePath == "" {
+		statePath = defaultStatePath
+	}
+	st, err := loadState(statePath)
+	if err != nil {
+		return fmt.Errorf("membaca state panel: %w", err)
+	}
+	if err := validateStoredState(st); err != nil {
+		return fmt.Errorf("state panel tidak valid: %w", err)
+	}
+	cfg, err := buildXrayConfig(st)
+	if err != nil {
+		return err
+	}
+	resp, err := callHelper(helperRequest{Action: "apply", Config: string(cfg)})
+	if err != nil {
+		return errors.New(redact(err.Error(), st.RealityPrivateKey))
+	}
+	if !resp.OK {
+		return errors.New(redact(resp.Error, st.RealityPrivateKey))
+	}
+	return nil
 }
 
 func initialize(args []string) error {
@@ -287,6 +321,9 @@ func validateStoredState(st appState) error {
 	if err := validateSettings(st.Settings); err != nil {
 		return err
 	}
+	if err := validateManagedInbounds(st); err != nil {
+		return err
+	}
 	if st.RealityPrivateKey == "" || st.RealityPublicKey == "" || !shortIDRE.MatchString(st.RealityShortID) {
 		return errors.New("material REALITY tidak lengkap")
 	}
@@ -353,14 +390,14 @@ func (s *server) handleState(w http.ResponseWriter, r *http.Request) {
 	}
 	users := make([]publicUser, 0, len(st.Users))
 	for _, u := range st.Users {
-		links := makeVLESSLinks(st, u)
+		links := makeUserLinks(st, u)
 		primary := ""
 		if len(links) > 0 {
 			primary = links[0].Link
 		}
 		users = append(users, publicUser{ID: u.ID, Name: u.Name, Enabled: u.Enabled, CreatedAt: u.CreatedAt, Link: primary, Links: links})
 	}
-	out := publicState{CSRF: csrf, Settings: st.Settings, Users: users, Running: resp.Status == "active", Version: resp.Version, Uptime: resp.Uptime, CPU: resp.CPU, Load: resp.Load, RAM: resp.RAM, Logs: logs, HTTPS: isHTTPS(r)}
+	out := publicState{CSRF: csrf, Settings: st.Settings, Inbounds: st.Inbounds, Users: users, Running: resp.Status == "active", Version: resp.Version, Uptime: resp.Uptime, CPU: resp.CPU, Load: resp.Load, RAM: resp.RAM, Logs: logs, HTTPS: isHTTPS(r)}
 	writeJSON(w, http.StatusOK, out)
 }
 func (s *server) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -467,6 +504,12 @@ func (s *server) handleAction(w http.ResponseWriter, r *http.Request) {
 		err = s.toggleUser(raw)
 	case "settings":
 		err = s.updateSettings(raw)
+	case "addInbound":
+		result, err = s.addInbound(raw)
+	case "deleteInbound":
+		err = s.deleteInbound(raw)
+	case "inboundMappings":
+		err = s.updateInboundMappings(raw)
 	case "changePassword":
 		err = s.changePassword(raw)
 	case "service":
@@ -493,6 +536,10 @@ func (s *server) handleQR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.URL.Query().Get("id")
+	inboundID := r.URL.Query().Get("inbound")
+	if inboundID == "" {
+		inboundID = "primary"
+	}
 	mappingIndex := 0
 	if value := r.URL.Query().Get("mapping"); value != "" {
 		parsed, err := strconv.Atoi(value)
@@ -507,19 +554,21 @@ func (s *server) handleQR(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 	for _, u := range st.Users {
 		if u.ID == id {
-			links := makeVLESSLinks(st, u)
-			if mappingIndex >= len(links) {
-				http.Error(w, "mapping NAT tidak ditemukan", http.StatusBadRequest)
+			for _, link := range makeUserLinks(st, u) {
+				if link.InboundID != inboundID || link.MappingIndex != mappingIndex {
+					continue
+				}
+				png, err := qrcode.Encode(link.Link, qrcode.Medium, 256)
+				if err != nil {
+					http.Error(w, "gagal membuat QR", 500)
+					return
+				}
+				w.Header().Set("Content-Type", "image/png")
+				w.Header().Set("Cache-Control", "no-store")
+				_, _ = w.Write(png)
 				return
 			}
-			png, err := qrcode.Encode(links[mappingIndex].Link, qrcode.Medium, 256)
-			if err != nil {
-				http.Error(w, "gagal membuat QR", 500)
-				return
-			}
-			w.Header().Set("Content-Type", "image/png")
-			w.Header().Set("Cache-Control", "no-store")
-			_, _ = w.Write(png)
+			http.Error(w, "mapping NAT tidak ditemukan", http.StatusBadRequest)
 			return
 		}
 	}
@@ -536,7 +585,7 @@ func (s *server) handleBackup(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	st := s.state
 	s.mu.Unlock()
-	b := backupFile{Schema: st.Schema, Settings: st.Settings, Users: st.Users, RealityPrivateKey: st.RealityPrivateKey, RealityPublicKey: st.RealityPublicKey, RealityShortID: st.RealityShortID}
+	b := backupFile{Schema: st.Schema, Settings: st.Settings, Users: st.Users, Inbounds: st.Inbounds, RealityPrivateKey: st.RealityPrivateKey, RealityPublicKey: st.RealityPublicKey, RealityShortID: st.RealityShortID}
 	data, err := json.MarshalIndent(b, "", "  ")
 	if err != nil {
 		writeError(w, 500, err)
@@ -565,13 +614,21 @@ func (s *server) addUser(raw map[string]json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	credentials := map[string]string{}
 	err = s.transact(func(st *appState) error {
 		for _, u := range st.Users {
 			if strings.EqualFold(u.Name, in.Name) {
 				return errors.New("nama user sudah digunakan")
 			}
 		}
-		st.Users = append(st.Users, User{ID: id, Name: in.Name, UUID: uuid, Enabled: true, CreatedAt: time.Now().UTC()})
+		for _, inbound := range st.Inbounds {
+			credential, err := newProtocolCredential(inbound.Protocol)
+			if err != nil {
+				return err
+			}
+			credentials[inbound.ID] = credential
+		}
+		st.Users = append(st.Users, User{ID: id, Name: in.Name, UUID: uuid, ProtocolCredentials: credentials, Enabled: true, CreatedAt: time.Now().UTC()})
 		return nil
 	})
 	if err != nil {
@@ -628,6 +685,92 @@ func (s *server) updateSettings(raw map[string]json.RawMessage) error {
 		in.PublicHost, in.PublicPort = host, port
 	}
 	return s.transact(func(st *appState) error { st.Settings = in; return validateSettings(st.Settings) })
+}
+
+func (s *server) addInbound(raw map[string]json.RawMessage) (any, error) {
+	var in struct {
+		Protocol     string `json:"protocol"`
+		InternalPort int    `json:"internalPort"`
+	}
+	if err := json.Unmarshal(raw["protocol"], &in.Protocol); err != nil || !contains(managedInboundProtocols, in.Protocol) {
+		return nil, errors.New("pilih protokol tambahan VMess atau Shadowsocks")
+	}
+	if !validPort(in.InternalPort) {
+		return nil, errors.New("port internal harus antara 1 dan 65535")
+	}
+	id, err := randomToken(12)
+	if err != nil {
+		return nil, err
+	}
+	err = s.transact(func(st *appState) error {
+		if len(st.Inbounds) >= 8 {
+			return errors.New("maksimal 8 inbound tambahan dikelola panel")
+		}
+		for _, current := range st.Inbounds {
+			if current.Protocol == in.Protocol {
+				return errors.New("inbound aktif sudah memakai protokol itu")
+			}
+		}
+		managed := ManagedInbound{ID: id, Protocol: in.Protocol, InternalPort: in.InternalPort}
+		for i := range st.Users {
+			credential, err := newProtocolCredential(in.Protocol)
+			if err != nil {
+				return err
+			}
+			if st.Users[i].ProtocolCredentials == nil {
+				st.Users[i].ProtocolCredentials = map[string]string{}
+			}
+			st.Users[i].ProtocolCredentials[id] = credential
+		}
+		st.Inbounds = append(st.Inbounds, managed)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return map[string]string{"id": id}, nil
+}
+
+func (s *server) deleteInbound(raw map[string]json.RawMessage) error {
+	id, err := requiredString(raw, "id")
+	if err != nil {
+		return err
+	}
+	return s.transact(func(st *appState) error {
+		for i, inbound := range st.Inbounds {
+			if inbound.ID != id {
+				continue
+			}
+			st.Inbounds = append(st.Inbounds[:i], st.Inbounds[i+1:]...)
+			for userIndex := range st.Users {
+				delete(st.Users[userIndex].ProtocolCredentials, id)
+			}
+			return nil
+		}
+		return errors.New("inbound tidak ditemukan")
+	})
+}
+
+func (s *server) updateInboundMappings(raw map[string]json.RawMessage) error {
+	var in struct {
+		ID          string   `json:"id"`
+		NATMappings []string `json:"natMappings"`
+	}
+	if err := json.Unmarshal(raw["inbound"], &in); err != nil || in.ID == "" {
+		return errors.New("pengaturan mapping inbound tidak valid")
+	}
+	for i := range in.NATMappings {
+		in.NATMappings[i] = strings.TrimSpace(in.NATMappings[i])
+	}
+	return s.transact(func(st *appState) error {
+		for i := range st.Inbounds {
+			if st.Inbounds[i].ID == in.ID {
+				st.Inbounds[i].NATMappings = in.NATMappings
+				return nil
+			}
+		}
+		return errors.New("inbound tidak ditemukan")
+	})
 }
 func (s *server) changePassword(raw map[string]json.RawMessage) error {
 	var in struct {
@@ -701,7 +844,7 @@ func (s *server) restore(raw map[string]json.RawMessage) error {
 	}
 	return s.transact(func(st *appState) error {
 		hash := st.AdminHash
-		*st = appState{Schema: b.Schema, Settings: b.Settings, Users: b.Users, AdminHash: hash, RealityPrivateKey: b.RealityPrivateKey, RealityPublicKey: b.RealityPublicKey, RealityShortID: b.RealityShortID}
+		*st = appState{Schema: b.Schema, Settings: b.Settings, Users: b.Users, Inbounds: b.Inbounds, AdminHash: hash, RealityPrivateKey: b.RealityPrivateKey, RealityPublicKey: b.RealityPublicKey, RealityShortID: b.RealityShortID}
 		return validateStoredState(*st)
 	})
 }

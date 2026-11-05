@@ -10,6 +10,15 @@ func TestStateIsStoredPrivate(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "private-state")
 	path := filepath.Join(dir, "state.json")
 	st := testState(t)
+	vmessID, err := newUUID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Inbounds = []ManagedInbound{{ID: "vmess-proto-1", Protocol: "vmess", InternalPort: st.Settings.InternalPort + 1}}
+	st.Users[0].ProtocolCredentials = map[string]string{"vmess-proto-1": vmessID}
+	if err := validateStoredState(st); err != nil {
+		t.Fatal(err)
+	}
 	if err := saveState(path, st); err != nil {
 		t.Fatal(err)
 	}
@@ -27,8 +36,12 @@ func TestStateIsStoredPrivate(t *testing.T) {
 	if dinfo.Mode().Perm() != 0700 {
 		t.Fatalf("state directory permissions = %04o, want 0700", dinfo.Mode().Perm())
 	}
-	if _, err := loadState(path); err != nil {
+	loaded, err := loadState(path)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if len(loaded.Inbounds) != 1 || loaded.Inbounds[0].Protocol != "vmess" || loaded.Users[0].ProtocolCredentials["vmess-proto-1"] != vmessID {
+		t.Fatal("managed inbound and per-user credential did not survive state persistence")
 	}
 }
 

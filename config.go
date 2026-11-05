@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -31,21 +32,33 @@ type Settings struct {
 }
 
 type User struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	UUID      string    `json:"uuid"`
-	Enabled   bool      `json:"enabled"`
-	CreatedAt time.Time `json:"createdAt"`
+	ID                  string            `json:"id"`
+	Name                string            `json:"name"`
+	UUID                string            `json:"uuid"`
+	ProtocolCredentials map[string]string `json:"protocolCredentials,omitempty"`
+	Enabled             bool              `json:"enabled"`
+	CreatedAt           time.Time         `json:"createdAt"`
+}
+
+// ManagedInbound is an additional, independently addressed protocol listener.
+// Only protocols with panel-generated per-user credentials and share links are
+// admitted here; advanced single-inbound protocol JSON remains in Settings.
+type ManagedInbound struct {
+	ID           string   `json:"id"`
+	Protocol     string   `json:"protocol"`
+	InternalPort int      `json:"internalPort"`
+	NATMappings  []string `json:"natMappings,omitempty"`
 }
 
 type appState struct {
-	Schema            int      `json:"schema"`
-	Settings          Settings `json:"settings"`
-	Users             []User   `json:"users"`
-	AdminHash         string   `json:"adminHash"`
-	RealityPrivateKey string   `json:"realityPrivateKey"`
-	RealityPublicKey  string   `json:"realityPublicKey"`
-	RealityShortID    string   `json:"realityShortId"`
+	Schema            int              `json:"schema"`
+	Settings          Settings         `json:"settings"`
+	Users             []User           `json:"users"`
+	Inbounds          []ManagedInbound `json:"inbounds,omitempty"`
+	AdminHash         string           `json:"adminHash"`
+	RealityPrivateKey string           `json:"realityPrivateKey"`
+	RealityPublicKey  string           `json:"realityPublicKey"`
+	RealityShortID    string           `json:"realityShortId"`
 }
 
 var hostnameRE = regexp.MustCompile(`^[A-Za-z0-9.-]{1,253}$`)
@@ -53,8 +66,11 @@ var shortIDRE = regexp.MustCompile(`^[0-9a-f]{2,16}$`)
 var portOnlyRE = regexp.MustCompile(`^[0-9]{1,5}$`)
 var nameRE = regexp.MustCompile(`^[^\x00-\x1f\x7f]{1,64}$`)
 var xhttpPathRE = regexp.MustCompile(`^/[A-Za-z0-9._~/-]{1,127}$`)
+var inboundIDRE = regexp.MustCompile(`^[A-Za-z0-9_-]{6,64}$`)
+var credentialRE = regexp.MustCompile(`^[0-9a-f-]{32,128}$`)
 
 var supportedInboundProtocols = []string{"tunnel", "http", "shadowsocks", "socks", "trojan", "vless", "vmess", "wireguard", "hysteria", "masque", "tun"}
+var managedInboundProtocols = []string{"vmess", "shadowsocks"}
 
 func effectiveInboundProtocol(s Settings) string {
 	if s.Protocol == "" {
@@ -205,6 +221,92 @@ func validateSettings(s Settings) error {
 	return nil
 }
 
+func validateManagedInbounds(st appState) error {
+	seenIDs := map[string]bool{}
+	seenProtocols := map[string]bool{effectiveInboundProtocol(st.Settings): true}
+	seenPorts := map[int]bool{st.Settings.InternalPort: true}
+	if addr := os.Getenv("PANEL_ADDR"); addr != "" {
+		if _, rawPort, err := net.SplitHostPort(addr); err == nil {
+			if panelPort, err := strconv.Atoi(rawPort); err == nil && validPort(panelPort) {
+				if seenPorts[panelPort] {
+					return errors.New("port inbound Xray bertabrakan dengan port internal panel")
+				}
+				seenPorts[panelPort] = true
+			}
+		}
+	}
+	seenMappings := map[string]bool{}
+	mappingCount := 0
+	for _, mapping := range effectiveNATMappings(st.Settings) {
+		if err := addValidatedMapping(seenMappings, mapping); err != nil {
+			return err
+		}
+		mappingCount++
+	}
+	for _, in := range st.Inbounds {
+		if !inboundIDRE.MatchString(in.ID) || seenIDs[in.ID] {
+			return errors.New("ID inbound kosong, tidak valid, atau duplikat")
+		}
+		seenIDs[in.ID] = true
+		if !contains(managedInboundProtocols, in.Protocol) {
+			return fmt.Errorf("protokol tambahan %q belum didukung untuk pembuatan credential/link", in.Protocol)
+		}
+		if seenProtocols[in.Protocol] {
+			return errors.New("setiap inbound aktif harus memakai protokol yang berbeda")
+		}
+		seenProtocols[in.Protocol] = true
+		if !validPort(in.InternalPort) || seenPorts[in.InternalPort] {
+			return fmt.Errorf("port internal inbound %s tidak valid atau bertabrakan", in.Protocol)
+		}
+		seenPorts[in.InternalPort] = true
+		for _, mapping := range in.NATMappings {
+			if err := addValidatedMapping(seenMappings, mapping); err != nil {
+				return err
+			}
+			mappingCount++
+		}
+	}
+	if mappingCount > 8 {
+		return errors.New("maksimal 8 mapping Xray; satu dari 9 mapping total dicadangkan untuk panel")
+	}
+	for _, user := range st.Users {
+		for _, in := range st.Inbounds {
+			credential := user.ProtocolCredentials[in.ID]
+			if !credentialRE.MatchString(credential) {
+				return fmt.Errorf("credential %s pengguna %q tidak valid", in.Protocol, user.Name)
+			}
+			if in.Protocol == "vmess" {
+				if _, err := parseUUID(credential); err != nil {
+					return fmt.Errorf("UUID VMess pengguna %q tidak valid", user.Name)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func addValidatedMapping(seen map[string]bool, mapping string) error {
+	host, port, err := parseNATMappingOrPort(mapping)
+	if err != nil {
+		return err
+	}
+	key := strings.ToLower(host) + ":" + strconv.Itoa(port)
+	if seen[key] {
+		return errors.New("mapping NAT duplikat")
+	}
+	seen[key] = true
+	return nil
+}
+
+func contains(values []string, value string) bool {
+	for _, item := range values {
+		if item == value {
+			return true
+		}
+	}
+	return false
+}
+
 func randomHex(n int) (string, error) {
 	b := make([]byte, n)
 	if _, err := rand.Read(b); err != nil {
@@ -222,6 +324,17 @@ func newUUID() (string, error) {
 	b[8] = (b[8] & 0x3f) | 0x80
 	h := hex.EncodeToString(b)
 	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32], nil
+}
+
+func newProtocolCredential(protocol string) (string, error) {
+	switch protocol {
+	case "vmess":
+		return newUUID()
+	case "shadowsocks":
+		return randomHex(16)
+	default:
+		return "", fmt.Errorf("pembuatan credential untuk %q belum didukung", protocol)
+	}
 }
 
 func newRealityKeys() (string, string, error) {
@@ -271,8 +384,56 @@ func buildXrayConfig(s appState) ([]byte, error) {
 	if err := validateSettings(s.Settings); err != nil {
 		return nil, err
 	}
-	if protocol := effectiveInboundProtocol(s.Settings); protocol != "vless" {
-		return buildConfiguredInboundConfig(s, protocol)
+	if err := validateManagedInbounds(s); err != nil {
+		return nil, err
+	}
+	primary, err := buildPrimaryInbound(s)
+	if err != nil {
+		return nil, err
+	}
+	inbounds := []any{primary}
+	for _, in := range s.Inbounds {
+		generated, err := buildManagedInbound(in, s.Users)
+		if err != nil {
+			return nil, err
+		}
+		inbounds = append(inbounds, generated)
+	}
+	cfg := map[string]any{
+		"log":      map[string]any{"loglevel": "warning"},
+		"inbounds": inbounds,
+		"outbounds": []any{
+			map[string]any{"protocol": "freedom", "tag": "direct"},
+			map[string]any{"protocol": "blackhole", "tag": "block"},
+		},
+		"routing": map[string]any{"domainStrategy": "AsIs", "rules": []any{
+			map[string]any{"type": "field", "network": "udp", "port": "53", "outboundTag": "direct"},
+			map[string]any{"type": "field", "network": "udp", "outboundTag": "block"},
+		}},
+	}
+	return json.MarshalIndent(cfg, "", "  ")
+}
+
+func buildPrimaryInbound(s appState) (map[string]any, error) {
+	protocol := effectiveInboundProtocol(s.Settings)
+	if protocol != "vless" {
+		settings, err := decodeProtocolObject(s.Settings.ProtocolSettings, "settings protokol")
+		if err != nil {
+			return nil, err
+		}
+		streamSettings, err := decodeProtocolObject(s.Settings.ProtocolStreamSettings, "streamSettings protokol")
+		if err != nil {
+			return nil, err
+		}
+		inbound := map[string]any{"protocol": protocol, "settings": settings}
+		if protocol != "tun" {
+			inbound["listen"] = "0.0.0.0"
+			inbound["port"] = s.Settings.InternalPort
+		}
+		if len(streamSettings) > 0 {
+			inbound["streamSettings"] = streamSettings
+		}
+		return inbound, nil
 	}
 	if s.RealityPrivateKey == "" || !shortIDRE.MatchString(s.RealityShortID) {
 		return nil, errors.New("key REALITY internal tidak valid")
@@ -285,11 +446,11 @@ func buildXrayConfig(s appState) ([]byte, error) {
 		if _, err := parseUUID(u.UUID); err != nil {
 			return nil, fmt.Errorf("UUID user %q tidak valid", u.Name)
 		}
-		c := map[string]string{"id": u.UUID}
+		client := map[string]string{"id": u.UUID}
 		if s.Settings.Mode == "tcp" {
-			c["flow"] = "xtls-rprx-vision"
+			client["flow"] = "xtls-rprx-vision"
 		}
-		clients = append(clients, c)
+		clients = append(clients, client)
 	}
 	stream := map[string]any{
 		"network":  s.Settings.Mode,
@@ -305,21 +466,46 @@ func buildXrayConfig(s appState) ([]byte, error) {
 	if s.Settings.Mode == "xhttp" {
 		stream["xhttpSettings"] = map[string]any{"path": s.Settings.XHTTPPath}
 	}
-	cfg := map[string]any{
-		"log": map[string]any{"loglevel": "warning"},
-		"inbounds": []any{map[string]any{
-			"listen": "0.0.0.0", "port": s.Settings.InternalPort, "protocol": "vless",
-			"settings":       map[string]any{"clients": clients, "decryption": "none"},
-			"streamSettings": stream,
-			"sniffing":       map[string]any{"enabled": true, "destOverride": []string{"http", "tls"}, "routeOnly": true},
-		}},
-		"outbounds": []any{
-			map[string]any{"protocol": "freedom", "tag": "direct"},
-			map[string]any{"protocol": "blackhole", "tag": "block"},
-		},
-		"routing": map[string]any{"domainStrategy": "AsIs", "rules": []any{map[string]any{"type": "field", "network": "udp", "outboundTag": "block"}}},
+	return map[string]any{
+		"listen": "0.0.0.0", "port": s.Settings.InternalPort, "protocol": "vless",
+		"settings":       map[string]any{"clients": clients, "decryption": "none"},
+		"streamSettings": stream,
+		"sniffing":       map[string]any{"enabled": true, "destOverride": []string{"http", "tls"}, "routeOnly": true},
+	}, nil
+}
+
+func buildManagedInbound(in ManagedInbound, users []User) (map[string]any, error) {
+	clients := make([]map[string]any, 0, len(users))
+	for _, user := range users {
+		if !user.Enabled {
+			continue
+		}
+		credential := user.ProtocolCredentials[in.ID]
+		switch in.Protocol {
+		case "vmess":
+			if _, err := parseUUID(credential); err != nil {
+				return nil, fmt.Errorf("UUID VMess pengguna %q tidak valid", user.Name)
+			}
+			clients = append(clients, map[string]any{"id": credential, "level": 0, "email": user.Name})
+		case "shadowsocks":
+			if !credentialRE.MatchString(credential) {
+				return nil, fmt.Errorf("credential Shadowsocks pengguna %q tidak valid", user.Name)
+			}
+			clients = append(clients, map[string]any{"password": credential, "method": "chacha20-ietf-poly1305", "level": 0, "email": user.Name})
+		default:
+			return nil, fmt.Errorf("protokol tambahan %q belum didukung", in.Protocol)
+		}
 	}
-	return json.MarshalIndent(cfg, "", "  ")
+	settings := map[string]any{"users": clients}
+	if in.Protocol == "shadowsocks" {
+		settings["network"] = "tcp"
+	}
+	return map[string]any{
+		"tag":    "managed-" + in.ID,
+		"listen": "0.0.0.0", "port": in.InternalPort, "protocol": in.Protocol,
+		"settings":       settings,
+		"streamSettings": map[string]any{"network": "tcp"},
+	}, nil
 }
 
 func makeVLESSLink(s appState, u User) string {
@@ -331,8 +517,11 @@ func makeVLESSLink(s appState, u User) string {
 }
 
 type publicLink struct {
-	Address string `json:"address"`
-	Link    string `json:"link"`
+	Address      string `json:"address"`
+	Link         string `json:"link"`
+	Protocol     string `json:"protocol"`
+	InboundID    string `json:"inboundId"`
+	MappingIndex int    `json:"mappingIndex"`
 }
 
 func makeVLESSLinks(s appState, u User) []publicLink {
@@ -340,14 +529,52 @@ func makeVLESSLinks(s appState, u User) []publicLink {
 		return nil
 	}
 	links := make([]publicLink, 0, len(effectiveNATMappings(s.Settings)))
-	for _, endpoint := range effectiveNATMappings(s.Settings) {
+	for mappingIndex, endpoint := range effectiveNATMappings(s.Settings) {
 		host, port, err := parseNATMapping(endpoint)
 		if err != nil {
 			continue
 		}
-		links = append(links, publicLink{Address: endpoint, Link: makeVLESSLinkForEndpoint(s, u, host, port)})
+		links = append(links, publicLink{Address: endpoint, Link: makeVLESSLinkForEndpoint(s, u, host, port), Protocol: "vless", InboundID: "primary", MappingIndex: mappingIndex})
 	}
 	return links
+}
+
+func makeUserLinks(s appState, user User) []publicLink {
+	links := makeVLESSLinks(s, user)
+	for _, in := range s.Inbounds {
+		for mappingIndex, endpoint := range in.NATMappings {
+			host, port, err := parseNATMapping(endpoint)
+			if err != nil {
+				continue
+			}
+			link, err := makeManagedLink(in, user, host, port)
+			if err != nil {
+				continue
+			}
+			links = append(links, publicLink{Address: endpoint, Link: link, Protocol: in.Protocol, InboundID: in.ID, MappingIndex: mappingIndex})
+		}
+	}
+	return links
+}
+
+func makeManagedLink(in ManagedInbound, user User, host string, port int) (string, error) {
+	credential := user.ProtocolCredentials[in.ID]
+	address := net.JoinHostPort(host, strconv.Itoa(port))
+	switch in.Protocol {
+	case "vmess":
+		if _, err := parseUUID(credential); err != nil {
+			return "", err
+		}
+		return "vmess://" + credential + "@" + address + "?encryption=auto#" + url.QueryEscape(user.Name), nil
+	case "shadowsocks":
+		if !credentialRE.MatchString(credential) {
+			return "", errors.New("credential Shadowsocks tidak valid")
+		}
+		userinfo := base64.RawURLEncoding.EncodeToString([]byte("chacha20-ietf-poly1305:" + credential))
+		return "ss://" + userinfo + "@" + address + "#" + url.QueryEscape(user.Name), nil
+	default:
+		return "", fmt.Errorf("pembuatan link untuk %q belum didukung", in.Protocol)
+	}
 }
 
 func makeVLESSLinkForEndpoint(s appState, u User, host string, port int) string {
@@ -381,32 +608,4 @@ func validateUserName(name string) error {
 		return errors.New("nama harus 1–64 karakter, tanpa karakter kontrol atau spasi di ujung")
 	}
 	return nil
-}
-
-func buildConfiguredInboundConfig(s appState, protocol string) ([]byte, error) {
-	settings, err := decodeProtocolObject(s.Settings.ProtocolSettings, "settings protokol")
-	if err != nil {
-		return nil, err
-	}
-	streamSettings, err := decodeProtocolObject(s.Settings.ProtocolStreamSettings, "streamSettings protokol")
-	if err != nil {
-		return nil, err
-	}
-	inbound := map[string]any{"protocol": protocol, "settings": settings}
-	if protocol != "tun" {
-		inbound["listen"] = "0.0.0.0"
-		inbound["port"] = s.Settings.InternalPort
-	}
-	if len(streamSettings) > 0 {
-		inbound["streamSettings"] = streamSettings
-	}
-	cfg := map[string]any{
-		"log":      map[string]any{"loglevel": "warning"},
-		"inbounds": []any{inbound},
-		"outbounds": []any{
-			map[string]any{"protocol": "freedom", "tag": "direct"},
-			map[string]any{"protocol": "blackhole", "tag": "block"},
-		},
-	}
-	return json.MarshalIndent(cfg, "", "  ")
 }

@@ -1,6 +1,6 @@
 # Xray Protocol Panel — Xray-core inbound management
 
-Panel web ringan berbasis Go untuk mengelola satu instance Xray di VPS Ubuntu ARM64/amd64 dengan RAM terbatas dan NAT provider. VLESS + REALITY tetap mode awal; seluruh 11 tipe inbound resmi Xray-core dapat dipilih, dengan pengaturan JSON tingkat lanjut untuk protokol selain VLESS.
+Panel web ringan berbasis Go untuk mengelola satu instance Xray di VPS Ubuntu ARM64/amd64 dengan RAM terbatas dan NAT provider. VLESS + REALITY tetap inbound utama awal; seluruh 11 tipe inbound resmi Xray-core dapat dipilih sebagai inbound utama, dan VMess serta Shadowsocks juga dapat ditambahkan sebagai inbound TCP terpisah dengan credential/link per pengguna.
 
 ## Isi repo
 
@@ -44,12 +44,12 @@ Installer memasang dependency OS dari repositori Ubuntu, meng-clone repo, memban
 
 ## NAT, port, dan transport
 
-NAT provider harus mengikuti transport protokol yang dipilih. Untuk mode awal VLESS + TCP + REALITY, arahkan hostname:port publik Xray sebagai **TCP → port internal Xray**. Endpoint publik dimasukkan ke **Pengaturan** panel; mapping panel tetap terpisah. Bila protokol pilihan memerlukan UDP, buat mapping UDP tersendiri di provider—entri hostname:port saja tidak mengubah TCP menjadi UDP.
+NAT provider harus mengikuti transport protokol yang dipilih. Untuk mode awal VLESS + TCP + REALITY, arahkan hostname:port publik sebagai **TCP → port internal VLESS**. Setiap inbound tambahan memiliki port internal dan daftar endpoint provider sendiri; arahkan hostname:port publik yang provider tetapkan sebagai TCP ke port internal inbound itu. Mapping panel tetap terpisah. Bila konfigurasi tingkat lanjut memerlukan UDP, buat mapping UDP tersendiri di provider—entri hostname:port saja tidak mengubah TCP menjadi UDP.
 
-Pengaturan menyimpan endpoint Xray satu per baris; maksimal **8 mapping Xray unik** karena satu dari batas **9 total** dipakai panel. Tautan/QR akun otomatis tersedia untuk VLESS. Untuk protokol lain, credential dan konfigurasi klien mengikuti JSON yang Anda masukkan; panel tidak membuat share-link otomatis.
-Untuk mode VLESS bawaan, UFW (bila aktif) membuka port internal TCP dan routing Xray memblokir trafik UDP keluar. Protokol lain dapat memerlukan UDP, sertifikat TLS, keypair, atau konfigurasi interface/routing OS; sesuaikan firewall dan provider mapping dengan protokol tersebut.
+Panel membatasi **8 mapping Xray unik total** untuk semua inbound karena satu dari batas **9 mapping provider** dipakai panel. Port publik yang acak berasal dari provider; jangan menebak hostname atau port. Tautan/QR dibuat untuk mapping yang sudah memiliki hostname. Credential Shadowsocks/VMess berbeda per pengguna dan disimpan di state/backup rahasia.
+VMess dan Shadowsocks tambahan memakai TCP dan port internal berbeda. Routing keluar mengirim UDP DNS port 53 langsung ke internet; UDP selain DNS tetap diblokir. Protokol lain yang dipilih sebagai inbound utama dapat memerlukan UDP, sertifikat TLS, keypair, atau konfigurasi interface/routing OS; sesuaikan firewall dan provider mapping dengan protokol tersebut.
 
-Port publik Xray di tiap tautan `vless://` berasal dari mapping provider dan dapat ditetapkan secara acak, sedangkan Xray bind ke port internal bersama. Jangan menganggap port publik sama dengan port internal. Mengubah port internal Xray dari panel akan memvalidasi config dan me-restart service; mapping NAT provider dan aturan UFW tidak berubah otomatis. Perbarui mapping provider dan buka port internal dengan transport TCP/UDP yang dibutuhkan secara manual bila UFW aktif.
+Port publik dalam link `vless://`, `vmess://`, atau `ss://` berasal dari mapping provider dan dapat ditetapkan secara acak, sedangkan setiap inbound Xray bind ke port internalnya sendiri. Jangan menganggap port publik sama dengan port internal. Perubahan inbound diuji memakai `xray run -test -config`, kemudian diterapkan melalui helper yang mencadangkan config lama dan mengembalikannya bila restart gagal. Perubahan port atau mapping di panel tidak mengubah pengaturan NAT provider; samakan tujuan lokal provider secara manual.
 
 ## Update dan uninstall
 
@@ -71,19 +71,19 @@ Perintah ini menghapus panel dan instalasi Xray melalui uninstaller resmi XTLS, 
 
 ## Protokol inbound lengkap
 
-Pilihan mengikuti [daftar protokol inbound resmi Xray-core](https://xtls.github.io/en/config/inbounds/): **Tunnel**, **HTTP**, **Shadowsocks**, **SOCKS**, **Trojan**, **VLESS**, **VMess**, **WireGuard**, **Hysteria**, **MASQUE**, dan **TUN**. VLESS tetap pilihan awal dan satu-satunya yang memiliki pengelolaan pengguna, UUID, link, serta QR bawaan. Untuk sepuluh lainnya, masukkan object JSON Xray `settings` dan `streamSettings`; panel menguji konfigurasi menggunakan binary Xray yang terpasang sebelum diterapkan, lalu me-rollback bila gagal. Tidak ada link/QR atau pengelolaan credential otomatis untuk protokol non-VLESS.
+Pilihan inbound utama mengikuti [daftar protokol inbound resmi Xray-core](https://xtls.github.io/en/config/inbounds/): **Tunnel**, **HTTP**, **Shadowsocks**, **SOCKS**, **Trojan**, **VLESS**, **VMess**, **WireGuard**, **Hysteria**, **MASQUE**, dan **TUN**. Inbound utama VLESS mempertahankan user, UUID, link, serta QR yang sudah ada. Dari bagian **Inbound protokol tambahan**, admin dapat mengaktifkan VMess dan/atau Shadowsocks pada port TCP terpisah; keduanya dapat hidup bersamaan dengan VLESS dan satu sama lain, sementara port serta protokol harus berbeda. Panel membuat credential dan link/QR per pengguna untuk ketiga jenis yang dikelola.
 
-Transport dan persyaratan protokol berbeda: HTTP/SOCKS tidak mengenkripsi trafik dengan sendirinya; beberapa pilihan memerlukan TLS/certifikat, mapping UDP terpisah, keypair klien/server, atau interface dan routing OS. Protokol TUN membuat interface, bukan listener NAT port biasa. Jangan menganggap mapping TCP yang ada otomatis mendukung UDP. Pengaturan JSON protokol dapat memuat credential; nilainya tampil bagi admin yang login, tersimpan pada state 0600 dan ikut masuk ke backup rahasia.
+Transport dan persyaratan protokol berbeda: HTTP/SOCKS tidak mengenkripsi trafik dengan sendirinya; beberapa pilihan memerlukan TLS/certifikat, mapping UDP terpisah, keypair klien/server, atau interface dan routing OS. Protokol TUN membuat interface, bukan listener NAT port biasa. Jangan menganggap mapping TCP yang ada otomatis mendukung UDP. Credential tambahan disimpan di state mode 0600 dan masuk ke backup rahasia. Semua perubahan inbound diuji sebelum diterapkan.
 
 ## Panel dan fitur
 
 - Buka URL panel menggunakan hostname dan port publik yang ditetapkan provider untuk mapping panel, misalnya `http://HOST:PORT-PUBLIK-PROVIDER`.
 - Login memakai password admin. Password disimpan sebagai bcrypt; sesi cookie `HttpOnly`, `SameSite=Strict`, token CSRF, pemeriksaan Origin, dan rate limit 5 gagal/15 menit per IP.
 - Dashboard menunjukkan status/versi/uptime Xray, estimasi CPU host (sampel singkat), load average host, perkiraan RSS proses Xray, kontrol service, dan log terakhir.
-- Pengguna bawaan hanya untuk VLESS: tambah/nonaktifkan/aktifkan/hapus akun UUID; tautan VLESS dan QR dibuat lokal tanpa CDN. Protokol lain memakai credential yang ditentukan pada JSON protokol.
-- Pilih **satu inbound aktif** per instance. VLESS memiliki preset `tcp` (Vision) atau `xhttp`; beralih protokol mengganti inbound yang dikelola pada port internal yang sama.
-- Daftar endpoint Xray, port, dan field koneksi VLESS diperiksa server-side. Untuk protokol selain VLESS, editor menyimpan object `settings` dan `streamSettings` JSON; Xray menjalankan `xray run -test -config` sebelum perubahan diterapkan. Jika uji atau restart gagal, helper root memulihkan konfigurasi sebelumnya.
-- Backup adalah file JSON yang mengandung key REALITY privat, credential protokol non-VLESS, dan konfigurasi untuk pemulihan. File tidak dirender sebagai unduhan ke halaman, tetapi tetap rahasia: simpan terenkripsi dan jangan unggah ke repo.
+- Pengguna dapat ditambah/nonaktifkan/aktifkan/dihapus; panel membuat UUID VLESS/VMess dan password Shadowsocks yang terpisah. Link/QR per pengguna tersedia untuk setiap endpoint publik lengkap.
+- Satu inbound utama tetap memiliki mode/pengaturan sendiri; inbound VMess dan Shadowsocks tambahan berjalan bersamaan dengan port internal terpisah. Setiap protokol tambahan hanya boleh aktif sekali.
+- Maksimal 8 endpoint Xray digabung untuk semua inbound (ditambah 1 slot provider panel). Endpoint tiap inbound diperiksa server-side. Xray menjalankan `xray run -test -config` pada seluruh config gabungan sebelum apply; jika uji atau restart gagal, helper root memulihkan config sebelumnya.
+- Backup adalah file JSON yang mengandung key REALITY privat, credential VMess/Shadowsocks, dan konfigurasi seluruh inbound untuk pemulihan. File tetap rahasia: simpan terenkripsi dan jangan unggah ke repo.
 - Dukungan HTTPS: installer dapat membuat sertifikat self-signed bernama `xray-panel.local`, atau memakai cert/key yang Anda sediakan. Sertifikat self-signed tidak cocok dengan hostname provider dan browser akan menampilkan peringatan; untuk HTTPS tepercaya, sediakan sertifikat yang cocok dengan hostname panel atau gunakan reverse proxy TLS. Tanpa TLS, panel menampilkan peringatan HTTP.
 
 ### Pengaturan TLS setelah install
@@ -114,7 +114,7 @@ Lakukan lebih dulu pada VPS uji atau dengan backup yang dapat dipulihkan.
 3. **Instalasi baru:** pastikan installer selesai, `systemctl status xray xray-panel`, dan `ss -ltnp` menampilkan port internal yang diharapkan. Mode awal VLESS hanya membuka TCP; bila protokol lain dipilih, verifikasi listener TCP/UDP dan firewall sesuai protokol.
 4. **NAT dan firewall:** untuk mode awal VLESS, konfirmasi mapping TCP publik→internal dan tes koneksi TCP ke endpoint Xray. Untuk protokol UDP, siapkan mapping UDP terpisah. Akses panel melalui URL panel yang berlaku; uji juga dari jaringan berbeda jika memungkinkan.
 5. **Login:** password benar masuk; salah 5 kali dibatasi; cookie panel memiliki `HttpOnly`/`SameSite=Strict`. Jika HTTP, peringatan keamanan terlihat.
-6. **Pengguna dan QR VLESS:** tambah user, salin link, pindai QR di klien VLESS yang mendukung REALITY + Vision. Tes koneksi TCP dan akses situs; pastikan key privat tidak ada di link, QR, endpoint state, atau log panel. Untuk protokol lain, uji credential/export klien yang sesuai protokol.
+6. **Pengguna dan QR:** tambah user, salin link, pindai QR VLESS; pastikan key privat tidak ada di link, QR, atau log. Pada staging, aktifkan VMess dan Shadowsocks pada dua port lokal yang berbeda; pastikan config berisi semua inbound dan link per-protokol berbeda. Tambahkan endpoint provider satu per inbound sebelum uji dari luar.
 7. **Nonaktif/hapus user:** nonaktifkan user dan pastikan koneksi barunya gagal, aktifkan kembali lalu uji; hapus user dan pastikan hilang dari daftar/config.
 8. **Perubahan gagal:** uji dest/XHTTP path yang tidak valid untuk VLESS atau JSON protokol yang malformed, simpan, pastikan UI menunjukkan error dan konfigurasi sebelumnya tetap bekerja. Untuk uji rollback restart, lakukan hanya di staging dengan port internal yang sengaja bentrok.
 9. **Mode XHTTP:** ubah ke XHTTP, buat/scan ulang link dengan klien yang mendukung VLESS XHTTP REALITY, lalu uji. Kembali ke TCP Vision bila klien tidak mendukungnya.
@@ -127,10 +127,10 @@ Lakukan lebih dulu pada VPS uji atau dengan backup yang dapat dipulihkan.
 - **Panel tidak dapat dibuka:** periksa `systemctl status xray-panel`, `journalctl -u xray-panel -n 100 --no-pager`, `ss -ltnp`, UFW, lalu pastikan mapping publik panel mengarah ke port internal yang benar.
 - **Xray gagal restart / port conflict:** periksa `systemctl status xray`, `journalctl -u xray -n 100 --no-pager`, dan `ss -ltnp`. Perubahan melalui panel mengembalikan config sebelumnya saat restart gagal. Periksa pesan error yang ditampilkan UI.
 - **Tidak ada koneksi klien:** pastikan hostname dan port publik yang ditetapkan provider sudah dimasukkan sebagai endpoint di Pengaturan dan benar pada link, mapping provider TCP aktif menuju port internal Xray, UFW sesuai, UUID/REALITY public key/short ID benar, dan SNI/dest mendukung TLS 1.3. Pastikan klien memakai transport yang sedang dipilih.
-- **Update gagal:** pastikan VPS dapat mengakses GitHub dan mirror Ubuntu, ruang disk cukup, lalu jalankan `install.sh update` lagi setelah memeriksa status Xray. Update resmi menggunakan `--manually-restart-later`; script kemudian menjalankan tes config dan restart.
+- **Update gagal:** pastikan VPS dapat mengakses GitHub dan mirror Ubuntu, ruang disk cukup, lalu jalankan `install.sh update` lagi setelah memeriksa status Xray. Installer membuat ulang config dari state, menjalankan uji Xray, menyimpan backup, menerapkan perubahan, dan me-rollback bila restart gagal.
 - **Lupa password:** tidak ada mekanisme reset dari UI. Setelah login shell root ke VPS, gunakan prosedur reset yang Anda audit sendiri atau backup/restore; jangan mengedit state sembarangan karena memuat key rahasia.
 - **Panel tetap HTTP:** file TLS harus pasangan cert/key yang benar, terbaca oleh user `xray-panel`, dan tercantum di `/etc/xray-panel.env`; lihat log service setelah restart.
 
 ## Verifikasi yang dilakukan pada paket sumber
 
-Tes prompt instalasi non-destruktif (dua port internal manual; hostname dan port publik Xray diisi kemudian melalui Pengaturan): `bash tests/install_prompts_test.sh`. Unit test mencakup semua 11 nama inbound resmi, validasi object JSON, generator konfigurasi, migrasi state lama ke VLESS, dan kebijakan password. Saat menyimpan konfigurasi, helper menjalankan `xray run -test -config` pada versi Xray yang terpasang sebelum apply dan rollback bila gagal. JSON credential protokol lain tersimpan di state/backup; protokol UDP/TLS/TUN tetap memerlukan konfigurasi jaringan/OS dan klien yang sesuai.
+Tes prompt instalasi non-destruktif (dua port internal manual; hostname dan port publik Xray diisi kemudian melalui Pengaturan): `bash tests/install_prompts_test.sh`. Unit test mencakup semua 11 nama inbound utama, config VLESS plus VMess/Shadowsocks simultan, link client per protokol, batas port/mapping dan validasi JSON. Saat menyimpan konfigurasi, helper menjalankan `xray run -test -config` pada versi Xray yang terpasang sebelum apply dan rollback bila gagal. Credential protokol tersimpan di state/backup; protokol UDP/TLS/TUN tetap memerlukan konfigurasi jaringan/OS dan klien yang sesuai.

@@ -53,9 +53,14 @@ func TestBuildTCPConfigAndVLESSLink(t *testing.T) {
 	if strings.Contains(link, s.RealityPrivateKey) {
 		t.Fatal("link exposes private key")
 	}
-	routing := got["routing"].(map[string]any)["rules"].([]any)[0].(map[string]any)
-	if routing["network"] != "udp" || routing["outboundTag"] != "block" {
-		t.Fatal("UDP block rule missing")
+	rules := got["routing"].(map[string]any)["rules"].([]any)
+	dnsRule := rules[0].(map[string]any)
+	udpBlockRule := rules[1].(map[string]any)
+	if dnsRule["network"] != "udp" || dnsRule["port"] != "53" || dnsRule["outboundTag"] != "direct" {
+		t.Fatal("UDP DNS must route direct before the general UDP block")
+	}
+	if udpBlockRule["network"] != "udp" || udpBlockRule["outboundTag"] != "block" {
+		t.Fatal("general UDP block rule missing after DNS exception")
 	}
 }
 
@@ -313,5 +318,109 @@ func TestCustomInboundSettingsMustBeJSONObjects(t *testing.T) {
 	s.Settings.Protocol = "not-an-xray-protocol"
 	if err := validateSettings(s.Settings); err == nil {
 		t.Fatal("accepted an unsupported inbound protocol")
+	}
+}
+
+func TestBuildMultipleDistinctManagedInboundsAndClientLinks(t *testing.T) {
+	s := testState(t)
+	vmessID, err := newUUID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	shadowsocksPassword, err := randomHex(16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Inbounds = []ManagedInbound{
+		{ID: "vmess-proto-1", Protocol: "vmess", InternalPort: 20152, NATMappings: []string{"vmess.example.net:22152"}},
+		{ID: "ss-proto-01", Protocol: "shadowsocks", InternalPort: 20153, NATMappings: []string{"ss.example.net:22153"}},
+	}
+	s.Users[0].ProtocolCredentials = map[string]string{
+		"vmess-proto-1": vmessID,
+		"ss-proto-01":   shadowsocksPassword,
+	}
+
+	cfg, err := buildXrayConfig(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(cfg, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	inbounds := decoded["inbounds"].([]any)
+	if len(inbounds) != 3 {
+		t.Fatalf("combined inbound count = %d, want 3", len(inbounds))
+	}
+	wantProtocols := []string{"vless", "vmess", "shadowsocks"}
+	for i, want := range wantProtocols {
+		got := inbounds[i].(map[string]any)["protocol"]
+		if got != want {
+			t.Fatalf("inbound %d protocol = %v, want %s", i, got, want)
+		}
+	}
+	vless := inbounds[0].(map[string]any)
+	if vless["port"].(float64) != float64(s.Settings.InternalPort) {
+		t.Fatalf("existing VLESS listener port changed: %v", vless["port"])
+	}
+	vmess := inbounds[1].(map[string]any)
+	vmessUsers := vmess["settings"].(map[string]any)["users"].([]any)
+	if vmess["port"].(float64) != 20152 || vmessUsers[0].(map[string]any)["id"] != vmessID {
+		t.Fatal("VMess listener or per-user UUID missing")
+	}
+	shadowsocks := inbounds[2].(map[string]any)
+	ssSettings := shadowsocks["settings"].(map[string]any)
+	ssUsers := ssSettings["users"].([]any)
+	if shadowsocks["port"].(float64) != 20153 || ssSettings["network"] != "tcp" || ssUsers[0].(map[string]any)["password"] != shadowsocksPassword {
+		t.Fatal("Shadowsocks listener or TCP-only per-user credential missing")
+	}
+
+	links := makeUserLinks(s, s.Users[0])
+	if len(links) != 3 {
+		t.Fatalf("generated client link count = %d, want 3", len(links))
+	}
+	if !strings.HasPrefix(links[0].Link, "vless://") || !strings.HasPrefix(links[1].Link, "vmess://"+vmessID+"@vmess.example.net:22152?") || !strings.HasPrefix(links[2].Link, "ss://") {
+		t.Fatal("client links do not match their protocol or mapped endpoint")
+	}
+	if strings.Contains(links[2].Link, s.RealityPrivateKey) {
+		t.Fatal("generated link exposed the REALITY private key")
+	}
+}
+
+func TestManagedInboundsRequireDistinctProtocolsPortsAndCombinedMappingLimit(t *testing.T) {
+	s := testState(t)
+	vmessID, _ := newUUID()
+	ssPassword, _ := randomHex(16)
+	s.Inbounds = []ManagedInbound{{ID: "vmess-proto-1", Protocol: "vmess", InternalPort: 20152}}
+	s.Users[0].ProtocolCredentials = map[string]string{"vmess-proto-1": vmessID}
+	if err := validateManagedInbounds(s); err != nil {
+		t.Fatalf("valid additional inbound rejected: %v", err)
+	}
+
+	bad := s
+	bad.Inbounds = append(append([]ManagedInbound(nil), s.Inbounds...), ManagedInbound{ID: "vmess-proto-2", Protocol: "vmess", InternalPort: 20153})
+	if validateManagedInbounds(bad) == nil {
+		t.Fatal("accepted two active inbounds using the same protocol")
+	}
+	bad = s
+	bad.Inbounds = append([]ManagedInbound(nil), s.Inbounds...)
+	bad.Inbounds[0].InternalPort = s.Settings.InternalPort
+	if validateManagedInbounds(bad) == nil {
+		t.Fatal("accepted duplicate internal listener ports")
+	}
+	bad = s
+	bad.Inbounds = append([]ManagedInbound(nil), s.Inbounds...)
+	for i := 0; i < 8; i++ {
+		bad.Inbounds[0].NATMappings = append(bad.Inbounds[0].NATMappings, "extra-"+strconv.Itoa(i)+".example.net:"+strconv.Itoa(23000+i))
+	}
+	if validateManagedInbounds(bad) == nil {
+		t.Fatal("accepted more than eight Xray mappings including the primary endpoint")
+	}
+	bad = s
+	bad.Inbounds = append([]ManagedInbound(nil), s.Inbounds...)
+	bad.Users = append([]User(nil), s.Users...)
+	bad.Users[0].ProtocolCredentials = map[string]string{"vmess-proto-1": ssPassword}
+	if validateManagedInbounds(bad) == nil {
+		t.Fatal("accepted non-UUID VMess credential")
 	}
 }
