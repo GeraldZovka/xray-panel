@@ -96,12 +96,6 @@ EOF
   chown root:root "$dir/90-xray-panel-credentials.conf"
   chmod 0644 "$dir/90-xray-panel-credentials.conf"
 }
-ask_value(){
-  local label=$1 default=$2 variable=$3 answer
-  read -r -p "$label [$default]: " answer || true
-  answer=${answer:-$default}
-  printf -v "$variable" '%s' "$answer"
-}
 ask_port(){
   local label=$1 default=$2 variable=$3 answer
   while :; do
@@ -192,9 +186,7 @@ ask_tls(){
     command -v openssl >/dev/null || die 'openssl diperlukan untuk membuat sertifikat.'
     mkdir -p /etc/xray-panel/tls
     chmod 0750 /etc/xray-panel /etc/xray-panel/tls
-    local host_san=$PUBLIC_HOST
-    if [[ $host_san == *:* ]]; then host_san="IP:$host_san"; else host_san="DNS:$host_san"; fi
-    openssl req -x509 -nodes -newkey rsa:2048 -days 825 -keyout /etc/xray-panel/tls/tls.key -out /etc/xray-panel/tls/tls.crt -subj "/CN=$PUBLIC_HOST" -addext "subjectAltName=$host_san" >/dev/null 2>&1
+    openssl req -x509 -nodes -newkey rsa:2048 -days 825 -keyout /etc/xray-panel/tls/tls.key -out /etc/xray-panel/tls/tls.crt -subj "/CN=xray-panel.local" -addext "subjectAltName=DNS:xray-panel.local" >/dev/null 2>&1
     TLS_CERT=/etc/xray-panel/tls/tls.crt; TLS_KEY=/etc/xray-panel/tls/tls.key
   else
     [[ -f $cert ]] || die 'File sertifikat tidak ditemukan.'
@@ -221,7 +213,6 @@ write_service_config(){
     printf 'XRAY_PANEL_STATE=%s\n' "$STATE_FILE"
     printf 'PANEL_ADDR=0.0.0.0:%s\n' "$PANEL_INTERNAL"
     printf 'PANEL_PUBLIC_PORT=%s\n' "$PANEL_PUBLIC"
-    printf 'PANEL_PUBLIC_HOST=%s\n' "$PUBLIC_HOST"
     if [[ -n ${TLS_CERT:-} ]]; then printf 'PANEL_TLS_CERT=%s\nPANEL_TLS_KEY=%s\n' "$TLS_CERT" "$TLS_KEY"; fi
   } > /etc/xray-panel.env
   chown root:"$PANEL_USER" /etc/xray-panel.env
@@ -267,8 +258,7 @@ install_fresh(){
     return
   fi
   say 'Pengaturan awal. Setiap endpoint Xray publik harus dipetakan provider ke port internal Xray yang sama.'
-  ask_value 'Alamat publik panel (host/IP untuk URL panel)' 'vectis-nat-1-20151-ybh.vps-eu1.sumopod.my.id' PUBLIC_HOST
-  validate_host "$PUBLIC_HOST" || die 'Hostname/IP publik tidak valid.'
+  say 'Hostname mapping panel diambil dari provider; installer hanya meminta port publik dan internal panel.'
   ask_port 'Port publik panel' 8080 PANEL_PUBLIC
   ask_port 'Port internal panel' 8080 PANEL_INTERNAL
   ask_nat_mappings
@@ -288,17 +278,16 @@ install_fresh(){
   if [[ -n $GENERATED_PASSWORD ]]; then printf '\nPASSWORD ADMIN (simpan sekarang; tidak akan ditampilkan lagi):\n%s\n\n' "$GENERATED_PASSWORD"; fi
   open_firewall
   start_services
-  local scheme=http display_host=$PUBLIC_HOST
+  local scheme=http
   [[ -z $TLS_CERT ]] || scheme=https
-  if [[ $display_host == *:* ]]; then display_host="[$display_host]"; fi
   say 'Instalasi selesai.'
-  printf 'Panel: %s://%s:%s\n' "$scheme" "$display_host" "$PANEL_PUBLIC"
+  printf 'Panel: %s://<hostname-panel-dari-provider>:%s\n' "$scheme" "$PANEL_PUBLIC"
   printf 'Xray NAT endpoints (masing-masing -> port internal %s/TCP):\n' "$XRAY_INTERNAL"
   for mapping in "${NAT_MAPPING_LIST[@]}"; do printf '  %s\n' "$mapping"; done
   printf 'Mode awal: VLESS + TCP + REALITY + Vision. UDP diblokir.\n'
   printf 'Port UFW internal yang diizinkan: %s/TCP dan %s/TCP (jika UFW aktif).\n' "$PANEL_INTERNAL" "$XRAY_INTERNAL"
-  printf 'Periksa provider NAT: mapping panel %s -> %s; setiap endpoint Xray di atas -> %s.\n' "$PANEL_PUBLIC" "$PANEL_INTERNAL" "$XRAY_INTERNAL"
-  if [[ -z $TLS_CERT ]]; then printf 'PERINGATAN: panel masih HTTP. Gunakan reverse proxy HTTPS atau aktifkan TLS.\n'; fi
+  printf 'Periksa provider NAT: mapping hostname-panel-dari-provider:%s -> %s/TCP; setiap endpoint Xray di atas -> %s/TCP.\n' "$PANEL_PUBLIC" "$PANEL_INTERNAL" "$XRAY_INTERNAL"
+  if [[ -z $TLS_CERT ]]; then printf 'PERINGATAN: panel masih HTTP. Gunakan reverse proxy HTTPS atau sertifikat yang cocok dengan hostname panel dari provider.\n'; fi
 }
 update_existing(){
   require_root;check_platform;check_repo_url
