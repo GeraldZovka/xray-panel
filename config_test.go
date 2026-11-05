@@ -333,8 +333,8 @@ func TestBuildMultipleDistinctManagedInboundsAndClientLinks(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.Inbounds = []ManagedInbound{
-		{ID: "vmess-proto-1", Protocol: "vmess", InternalPort: 20152, NATMappings: []string{"vmess.example.net:22152"}},
-		{ID: "ss-proto-01", Protocol: "shadowsocks", InternalPort: 20153, NATMappings: []string{"ss.example.net:22153"}},
+		{ID: "vmess-proto-1", Enabled: true, Protocol: "vmess", InternalPort: 20152, NATMappings: []string{"vmess.example.net:22152"}},
+		{ID: "ss-proto-01", Enabled: true, Protocol: "shadowsocks", InternalPort: 20153, NATMappings: []string{"ss.example.net:22153"}},
 	}
 	s.Users[0].ProtocolCredentials = map[string]string{
 		"vmess-proto-1": vmessID,
@@ -391,11 +391,11 @@ func TestBuildMultipleDistinctManagedInboundsAndClientLinks(t *testing.T) {
 	}
 }
 
-func TestManagedInboundsRequireDistinctProtocolsPortsAndCombinedMappingLimit(t *testing.T) {
+func TestManagedInboundsRequireDistinctPortsAndCombinedMappingLimit(t *testing.T) {
 	s := testState(t)
 	vmessID, _ := newUUID()
 	ssPassword, _ := randomHex(16)
-	s.Inbounds = []ManagedInbound{{ID: "vmess-proto-1", Protocol: "vmess", InternalPort: 20152}}
+	s.Inbounds = []ManagedInbound{{ID: "vmess-proto-1", Enabled: true, Protocol: "vmess", InternalPort: 20152}}
 	s.Users[0].ProtocolCredentials = map[string]string{"vmess-proto-1": vmessID}
 	if err := validateManagedInbounds(s); err != nil {
 		t.Fatalf("valid additional inbound rejected: %v", err)
@@ -403,8 +403,14 @@ func TestManagedInboundsRequireDistinctProtocolsPortsAndCombinedMappingLimit(t *
 
 	bad := s
 	bad.Inbounds = append(append([]ManagedInbound(nil), s.Inbounds...), ManagedInbound{ID: "vmess-proto-2", Protocol: "vmess", InternalPort: 20153})
-	if validateManagedInbounds(bad) == nil {
-		t.Fatal("accepted two active inbounds using the same protocol")
+	secondVMessID, err := newProtocolCredential("vmess")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad.Users = append([]User(nil), s.Users...)
+	bad.Users[0].ProtocolCredentials = map[string]string{"vmess-proto-1": vmessID, "vmess-proto-2": secondVMessID}
+	if err := validateManagedInbounds(bad); err != nil {
+		t.Fatalf("rejected two active inbounds using the same protocol: %v", err)
 	}
 	bad = s
 	bad.Inbounds = append([]ManagedInbound(nil), s.Inbounds...)
@@ -504,7 +510,169 @@ func TestVLESSXHTTPInboundRequiresDistinctPortAndSafePath(t *testing.T) {
 	}
 	s.Inbounds[0] = inbound
 	s.Inbounds[0].Mode = "tcp"
-	if validateManagedInbounds(s) == nil {
-		t.Fatal("accepted a non-XHTTP additional VLESS inbound")
+	if err := validateManagedInbounds(s); err != nil {
+		t.Fatalf("rejected supported TCP VLESS inbound: %v", err)
+	}
+}
+
+func TestSeveralManagedVLESSTransportsAndDisabledOmission(t *testing.T) {
+	s := testState(t)
+	tcp, err := newVLESSXHTTPInbound("vless-tcp-01", 20152, s.Settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tcp.Name = "TCP profile"
+	tcp.Mode = "tcp"
+	tcp.Enabled = true
+	xh, err := newVLESSXHTTPInbound("vless-xhttp1", 20153, s.Settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	xh.Name = "XHTTP profile"
+	xh.Enabled = true
+	disabled, err := newVLESSXHTTPInbound("vless-off-01", 20154, s.Settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabled.Enabled = false
+	s.Inbounds = []ManagedInbound{tcp, xh, disabled}
+	cfg, err := buildXrayConfig(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err = json.Unmarshal(cfg, &got); err != nil {
+		t.Fatal(err)
+	}
+	ins := got["inbounds"].([]any)
+	if len(ins) != 3 {
+		t.Fatalf("got %d listeners, expected primary and two enabled", len(ins))
+	}
+	if ins[1].(map[string]any)["streamSettings"].(map[string]any)["network"] != "tcp" {
+		t.Fatal("managed TCP profile not generated")
+	}
+	clients := ins[1].(map[string]any)["settings"].(map[string]any)["clients"].([]any)
+	if clients[0].(map[string]any)["flow"] != "xtls-rprx-vision" {
+		t.Fatal("managed TCP flow missing")
+	}
+	if ins[2].(map[string]any)["streamSettings"].(map[string]any)["network"] != "xhttp" {
+		t.Fatal("managed XHTTP profile not generated")
+	}
+	rules := got["routing"].(map[string]any)["rules"].([]any)
+	if rules[0].(map[string]any)["outboundTag"] != "direct" || rules[1].(map[string]any)["outboundTag"] != "block" {
+		t.Fatal("DNS direct / other UDP block routing changed")
+	}
+}
+
+func TestLegacyManagedInboundDefaultsEnabledAndEmptyModeIsXHTTP(t *testing.T) {
+	var in ManagedInbound
+	if err := json.Unmarshal([]byte(`{"id":"legacy-inb1","protocol":"vless","internalPort":20152,"sni":"www.cloudflare.com","dest":"www.cloudflare.com:443","xhttpPath":"/old","realityPrivateKey":"a","realityPublicKey":"b","realityShortId":"abcdef12"}`), &in); err != nil {
+		t.Fatal(err)
+	}
+	if !in.Enabled {
+		t.Fatal("old state missing enabled must default enabled")
+	}
+	s := testState(t)
+	in.Mode = ""
+	s.Inbounds = []ManagedInbound{in}
+	cfg, err := buildXrayConfig(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(cfg, &got)
+	stream := got["inbounds"].([]any)[1].(map[string]any)["streamSettings"].(map[string]any)
+	if stream["network"] != "xhttp" {
+		t.Fatalf("empty legacy mode resolved to %v", stream["network"])
+	}
+}
+
+func TestManagedInboundIDsAndPortsMustBeUnique(t *testing.T) {
+	s := testState(t)
+	a, e := newVLESSXHTTPInbound("vless-one1", 20152, s.Settings)
+	if e != nil {
+		t.Fatal(e)
+	}
+	b, e := newVLESSXHTTPInbound("vless-two2", 20153, s.Settings)
+	if e != nil {
+		t.Fatal(e)
+	}
+	s.Inbounds = []ManagedInbound{a, b}
+	if err := validateManagedInbounds(s); err != nil {
+		t.Fatalf("multiple VLESS rejected: %v", err)
+	}
+	s.Inbounds[1].InternalPort = s.Inbounds[0].InternalPort
+	if err := validateManagedInbounds(s); err == nil {
+		t.Fatal("duplicate internal port accepted")
+	}
+	s.Inbounds[1] = a
+	if err := validateManagedInbounds(s); err == nil {
+		t.Fatal("duplicate inbound ID accepted")
+	}
+}
+
+func TestLegacySettingsDefaultEnabledAndPrimaryCanBeStoppedIndependently(t *testing.T) {
+	var legacy Settings
+	if err := json.Unmarshal([]byte(`{"internalPort":20151,"protocol":"vless","mode":"tcp","sni":"www.cloudflare.com","dest":"www.cloudflare.com:443","xhttpPath":"/primary"}`), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if !legacy.Enabled {
+		t.Fatal("legacy settings without enabled must default to active")
+	}
+
+	s := testState(t)
+	secondary, err := newVLESSXHTTPInbound("secondary-01", 20152, s.Settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondary.NATMappings = []string{"secondary.example.net:22152"}
+	s.Settings.Enabled = false
+	s.Inbounds = []ManagedInbound{secondary}
+	cfg, err := buildXrayConfig(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(cfg, &got); err != nil {
+		t.Fatal(err)
+	}
+	inbounds := got["inbounds"].([]any)
+	if len(inbounds) != 1 || inbounds[0].(map[string]any)["port"].(float64) != 20152 {
+		t.Fatalf("stopped primary was not omitted while secondary stayed active: %#v", inbounds)
+	}
+	s.Inbounds[0].Enabled = false
+	if err := validateManagedInbounds(s); err == nil {
+		t.Fatal("allowed all inbound profiles to be stopped")
+	}
+}
+
+func TestMultipleManagedInboundsMayShareVMessProtocol(t *testing.T) {
+	s := testState(t)
+	first, err := newProtocolCredential("vmess")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := newProtocolCredential("vmess")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Inbounds = []ManagedInbound{
+		{ID: "vmess-one1", Name: "VMess one", Enabled: true, Protocol: "vmess", Mode: "tcp", InternalPort: 20152, NATMappings: []string{"one.example.net:22152"}},
+		{ID: "vmess-two2", Name: "VMess two", Enabled: true, Protocol: "vmess", Mode: "tcp", InternalPort: 20153, NATMappings: []string{"two.example.net:22153"}},
+	}
+	s.Users[0].ProtocolCredentials = map[string]string{"vmess-one1": first, "vmess-two2": second}
+	if err := validateManagedInbounds(s); err != nil {
+		t.Fatalf("multiple VMess profiles rejected: %v", err)
+	}
+	cfg, err := buildXrayConfig(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(cfg, &got); err != nil {
+		t.Fatal(err)
+	}
+	if count := len(got["inbounds"].([]any)); count != 3 {
+		t.Fatalf("combined listener count = %d, want 3", count)
 	}
 }

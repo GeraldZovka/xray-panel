@@ -66,6 +66,8 @@ type publicUser struct {
 }
 type publicInbound struct {
 	ID           string   `json:"id"`
+	Name         string   `json:"name"`
+	Enabled      bool     `json:"enabled"`
 	Protocol     string   `json:"protocol"`
 	InternalPort int      `json:"internalPort"`
 	Mode         string   `json:"mode"`
@@ -378,6 +380,12 @@ func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		log.Printf("template error: %v", err)
 	}
 }
+func primaryInboundName(settings Settings) string {
+	if settings.Name != "" {
+		return settings.Name
+	}
+	return "VLESS TCP Vision"
+}
 func (s *server) handleState(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)
@@ -407,9 +415,27 @@ func (s *server) handleState(w http.ResponseWriter, r *http.Request) {
 		}
 		users = append(users, publicUser{ID: u.ID, Name: u.Name, Enabled: u.Enabled, CreatedAt: u.CreatedAt, Link: primary, Links: links})
 	}
-	inbounds := make([]publicInbound, 0, len(st.Inbounds))
+	inbounds := make([]publicInbound, 0, len(st.Inbounds)+1)
+	primaryMode := st.Settings.Mode
+	if primaryMode == "" {
+		primaryMode = "tcp"
+	}
+	inbounds = append(inbounds, publicInbound{
+		ID: "primary", Name: primaryInboundName(st.Settings), Enabled: st.Settings.Enabled,
+		Protocol: effectiveInboundProtocol(st.Settings), InternalPort: st.Settings.InternalPort,
+		Mode: primaryMode, NATMappings: effectiveNATMappings(st.Settings),
+		SNI: st.Settings.SNI, Dest: st.Settings.Dest, XHTTPPath: st.Settings.XHTTPPath,
+	})
 	for _, in := range st.Inbounds {
-		inbounds = append(inbounds, publicInbound{ID: in.ID, Protocol: in.Protocol, InternalPort: in.InternalPort, Mode: in.Mode, NATMappings: in.NATMappings, SNI: in.SNI, Dest: in.Dest, XHTTPPath: in.XHTTPPath})
+		mode := in.Mode
+		if mode == "" && in.Protocol == "vless" {
+			mode = "xhttp"
+		}
+		name := in.Name
+		if name == "" {
+			name = strings.ToUpper(in.Protocol) + " " + strconv.Itoa(in.InternalPort)
+		}
+		inbounds = append(inbounds, publicInbound{ID: in.ID, Name: name, Enabled: in.Enabled, Protocol: in.Protocol, InternalPort: in.InternalPort, Mode: mode, NATMappings: in.NATMappings, SNI: in.SNI, Dest: in.Dest, XHTTPPath: in.XHTTPPath})
 	}
 	out := publicState{CSRF: csrf, Settings: st.Settings, Inbounds: inbounds, Users: users, Running: resp.Status == "active", Version: resp.Version, Uptime: resp.Uptime, CPU: resp.CPU, Load: resp.Load, RAM: resp.RAM, Logs: logs, HTTPS: isHTTPS(r)}
 	writeJSON(w, http.StatusOK, out)
@@ -522,6 +548,10 @@ func (s *server) handleAction(w http.ResponseWriter, r *http.Request) {
 		result, err = s.addInbound(raw)
 	case "deleteInbound":
 		err = s.deleteInbound(raw)
+	case "updateInbound":
+		err = s.updateInbound(raw)
+	case "toggleInbound":
+		err = s.toggleInbound(raw)
 	case "inboundMappings":
 		err = s.updateInboundMappings(raw)
 	case "changePassword":
@@ -712,46 +742,68 @@ func parseAddInboundRequest(raw map[string]json.RawMessage) (string, int, error)
 	if err := json.Unmarshal(raw["protocol"], &in.Protocol); err != nil || in.Protocol != "vless" {
 		return "", 0, errors.New("inbound tambahan yang didukung adalah VLESS + XHTTP + REALITY")
 	}
-	if err := json.Unmarshal(raw["internalPort"], &in.InternalPort); err != nil {
-		return "", 0, errors.New("port internal harus angka antara 1 dan 65535")
-	}
-	if !validPort(in.InternalPort) {
+	if err := json.Unmarshal(raw["internalPort"], &in.InternalPort); err != nil || !validPort(in.InternalPort) {
 		return "", 0, errors.New("port internal harus antara 1 dan 65535")
 	}
 	return in.Protocol, in.InternalPort, nil
 }
-
 func (s *server) addInbound(raw map[string]json.RawMessage) (any, error) {
-	protocol, internalPort, err := parseAddInboundRequest(raw)
-	if err != nil {
+	var req struct {
+		Protocol     string   `json:"protocol"`
+		Name         string   `json:"name"`
+		InternalPort int      `json:"internalPort"`
+		Mode         string   `json:"mode"`
+		NATMappings  []string `json:"natMappings"`
+	}
+	if err := json.Unmarshal(raw["protocol"], &req.Protocol); err != nil {
+		return nil, errors.New("protokol inbound tidak valid")
+	}
+	if err := json.Unmarshal(raw["internalPort"], &req.InternalPort); err != nil || !validPort(req.InternalPort) {
+		return nil, errors.New("port internal harus antara 1 dan 65535")
+	}
+	if !contains(managedInboundProtocols, req.Protocol) {
+		return nil, errors.New("inbound tambahan yang didukung adalah VLESS, VMess, atau Shadowsocks")
+	}
+	if req.Name == "" {
+		req.Name = req.Protocol + " " + strconv.Itoa(req.InternalPort)
+	}
+	if err := validateUserName(req.Name); err != nil {
 		return nil, err
+	}
+	if req.Mode == "" {
+		if req.Protocol == "vless" {
+			req.Mode = "xhttp"
+		} else {
+			req.Mode = "tcp"
+		}
 	}
 	id, err := randomToken(12)
 	if err != nil {
 		return nil, err
 	}
 	err = s.transact(func(st *appState) error {
-		for _, current := range st.Inbounds {
-			if current.Protocol == "vless" {
-				return errors.New("inbound VLESS + XHTTP + REALITY sudah tersedia")
+		managed := ManagedInbound{ID: id, Name: req.Name, Enabled: true, Protocol: req.Protocol, InternalPort: req.InternalPort, Mode: req.Mode, NATMappings: req.NATMappings}
+		if req.Protocol == "vless" {
+			var e error
+			managed, e = newVLESSXHTTPInbound(id, req.InternalPort, st.Settings)
+			if e != nil {
+				return e
 			}
-		}
-		managed, err := newVLESSXHTTPInbound(id, internalPort, st.Settings)
-		if err != nil {
-			return err
+			managed.Name = req.Name
+			managed.Enabled = true
+			managed.Mode = req.Mode
 		}
 		for i := range st.Users {
-			if protocol == "vless" {
-				continue
+			if req.Protocol != "vless" {
+				c, e := newProtocolCredential(req.Protocol)
+				if e != nil {
+					return e
+				}
+				if st.Users[i].ProtocolCredentials == nil {
+					st.Users[i].ProtocolCredentials = map[string]string{}
+				}
+				st.Users[i].ProtocolCredentials[id] = c
 			}
-			credential, err := newProtocolCredential(protocol)
-			if err != nil {
-				return err
-			}
-			if st.Users[i].ProtocolCredentials == nil {
-				st.Users[i].ProtocolCredentials = map[string]string{}
-			}
-			st.Users[i].ProtocolCredentials[id] = credential
 		}
 		st.Inbounds = append(st.Inbounds, managed)
 		return nil
@@ -760,6 +812,74 @@ func (s *server) addInbound(raw map[string]json.RawMessage) (any, error) {
 		return nil, err
 	}
 	return map[string]string{"id": id}, nil
+}
+func (s *server) updateInbound(raw map[string]json.RawMessage) error {
+	var in struct {
+		ID           string   `json:"id"`
+		Name         string   `json:"name"`
+		InternalPort int      `json:"internalPort"`
+		Mode         string   `json:"mode"`
+		NATMappings  []string `json:"natMappings"`
+	}
+	if json.Unmarshal(raw["inbound"], &in) != nil || in.ID == "" {
+		return errors.New("pengaturan inbound tidak valid")
+	}
+	if err := validateUserName(in.Name); err != nil {
+		return err
+	}
+	return s.transact(func(st *appState) error {
+		if in.ID == "primary" {
+			st.Settings.Name = in.Name
+			st.Settings.InternalPort = in.InternalPort
+			st.Settings.NATMappings = in.NATMappings
+			st.Settings.PublicHost = ""
+			st.Settings.PublicPort = 0
+			if len(in.NATMappings) > 0 {
+				h, p, e := parseNATMappingOrPort(in.NATMappings[0])
+				if e != nil {
+					return e
+				}
+				st.Settings.PublicHost = h
+				st.Settings.PublicPort = p
+			}
+			return nil
+		}
+		for i := range st.Inbounds {
+			x := &st.Inbounds[i]
+			if x.ID == in.ID {
+				x.Name = in.Name
+				x.InternalPort = in.InternalPort
+				x.NATMappings = in.NATMappings
+				if in.Mode != "" {
+					x.Mode = in.Mode
+				}
+				return nil
+			}
+		}
+		return errors.New("inbound tidak ditemukan")
+	})
+}
+func (s *server) toggleInbound(raw map[string]json.RawMessage) error {
+	var in struct {
+		ID      string `json:"id"`
+		Enabled bool   `json:"enabled"`
+	}
+	if json.Unmarshal(raw["id"], &in.ID) != nil || json.Unmarshal(raw["enabled"], &in.Enabled) != nil || in.ID == "" {
+		return errors.New("toggle inbound tidak valid")
+	}
+	return s.transact(func(st *appState) error {
+		if in.ID == "primary" {
+			st.Settings.Enabled = in.Enabled
+			return nil
+		}
+		for i := range st.Inbounds {
+			if st.Inbounds[i].ID == in.ID {
+				st.Inbounds[i].Enabled = in.Enabled
+				return nil
+			}
+		}
+		return errors.New("inbound tidak ditemukan")
+	})
 }
 
 func (s *server) deleteInbound(raw map[string]json.RawMessage) error {

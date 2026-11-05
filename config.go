@@ -18,6 +18,8 @@ import (
 )
 
 type Settings struct {
+	Name                   string   `json:"name,omitempty"`
+	Enabled                bool     `json:"enabled"`
 	PublicHost             string   `json:"publicHost"`
 	PublicPort             int      `json:"publicPort"`
 	NATMappings            []string `json:"natMappings,omitempty"`
@@ -29,6 +31,16 @@ type Settings struct {
 	SNI                    string   `json:"sni"`
 	Dest                   string   `json:"dest"`
 	XHTTPPath              string   `json:"xhttpPath"`
+}
+
+func (s *Settings) UnmarshalJSON(data []byte) error {
+	type alias Settings
+	decoded := alias{Enabled: true}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*s = Settings(decoded)
+	return nil
 }
 
 type User struct {
@@ -43,6 +55,8 @@ type User struct {
 // ManagedInbound is an additional, independently configured Xray listener.
 type ManagedInbound struct {
 	ID                string   `json:"id"`
+	Name              string   `json:"name"`
+	Enabled           bool     `json:"enabled"`
 	Protocol          string   `json:"protocol"`
 	InternalPort      int      `json:"internalPort"`
 	Mode              string   `json:"mode,omitempty"`
@@ -53,6 +67,16 @@ type ManagedInbound struct {
 	RealityPrivateKey string   `json:"realityPrivateKey,omitempty"`
 	RealityPublicKey  string   `json:"realityPublicKey,omitempty"`
 	RealityShortID    string   `json:"realityShortId,omitempty"`
+}
+
+func (in *ManagedInbound) UnmarshalJSON(data []byte) error {
+	type alias ManagedInbound
+	decoded := alias{Enabled: true}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*in = ManagedInbound(decoded)
+	return nil
 }
 
 type appState struct {
@@ -164,6 +188,11 @@ func effectiveNATMappings(s Settings) []string {
 }
 
 func validateSettings(s Settings) error {
+	if s.Name != "" {
+		if err := validateUserName(s.Name); err != nil {
+			return fmt.Errorf("nama inbound utama tidak valid: %w", err)
+		}
+	}
 	if !validPort(s.InternalPort) {
 		return errors.New("port harus antara 1 dan 65535")
 	}
@@ -228,9 +257,13 @@ func validateSettings(s Settings) error {
 
 func validateManagedInbounds(st appState) error {
 	seenIDs := map[string]bool{}
-	seenProtocols := map[string]bool{effectiveInboundProtocol(st.Settings): true}
+	seenIDs["primary"] = true
 	seenPorts := map[int]bool{st.Settings.InternalPort: true}
-	seenSecondaryVLESS := false
+	activeCount := 0
+	if st.Settings.Enabled {
+		activeCount++
+	}
+
 	if addr := os.Getenv("PANEL_ADDR"); addr != "" {
 		if _, rawPort, err := net.SplitHostPort(addr); err == nil {
 			if panelPort, err := strconv.Atoi(rawPort); err == nil && validPort(panelPort) {
@@ -257,24 +290,25 @@ func validateManagedInbounds(st appState) error {
 		if !contains(managedInboundProtocols, in.Protocol) {
 			return fmt.Errorf("protokol tambahan %q belum didukung untuk pembuatan credential/link", in.Protocol)
 		}
-		if in.Protocol == "vless" {
-			if seenSecondaryVLESS {
-				return errors.New("hanya satu inbound VLESS XHTTP tambahan yang didukung")
+		if in.Name != "" {
+			if err := validateUserName(in.Name); err != nil {
+				return fmt.Errorf("nama inbound tidak valid: %w", err)
 			}
-			seenSecondaryVLESS = true
-		} else {
-			if seenProtocols[in.Protocol] {
-				return errors.New("inbound legacy dengan protokol sama sudah tersedia")
-			}
-			seenProtocols[in.Protocol] = true
+		}
+		if in.Enabled {
+			activeCount++
 		}
 		if !validPort(in.InternalPort) || seenPorts[in.InternalPort] {
 			return fmt.Errorf("port internal inbound %s tidak valid atau bertabrakan", in.Protocol)
 		}
 		seenPorts[in.InternalPort] = true
 		if in.Protocol == "vless" {
-			if in.Mode != "xhttp" {
-				return errors.New("inbound VLESS tambahan harus memakai transport XHTTP")
+			mode := in.Mode
+			if mode == "" {
+				mode = "xhttp"
+			}
+			if mode != "tcp" && mode != "xhttp" {
+				return errors.New("mode inbound VLESS harus tcp atau xhttp")
 			}
 			if in.SNI == "" || in.Dest == "" || in.XHTTPPath == "" || in.RealityPrivateKey == "" || in.RealityPublicKey == "" || !shortIDRE.MatchString(in.RealityShortID) {
 				return errors.New("pengaturan XHTTP+REALITY pada inbound tambahan belum lengkap")
@@ -282,9 +316,11 @@ func validateManagedInbounds(st appState) error {
 			if err := validateRealityTarget(in.SNI, in.Dest); err != nil {
 				return err
 			}
-			if !xhttpPathRE.MatchString(in.XHTTPPath) {
+			if mode == "xhttp" && !xhttpPathRE.MatchString(in.XHTTPPath) {
 				return errors.New("path XHTTP harus diawali / dan hanya memakai karakter aman")
 			}
+		} else if in.Mode != "" && in.Mode != "tcp" {
+			return errors.New("transport VMess/Shadowsocks yang dikelola panel hanya TCP")
 		}
 		for _, mapping := range in.NATMappings {
 			if err := addValidatedMapping(seenMappings, mapping); err != nil {
@@ -295,6 +331,9 @@ func validateManagedInbounds(st appState) error {
 	}
 	if mappingCount > 8 {
 		return errors.New("maksimal 8 mapping Xray; satu dari 9 mapping total dicadangkan untuk panel")
+	}
+	if activeCount == 0 {
+		return errors.New("minimal satu inbound harus tetap aktif")
 	}
 	for _, user := range st.Users {
 		for _, in := range st.Inbounds {
@@ -393,7 +432,7 @@ func newVLESSXHTTPInbound(id string, port int, defaults Settings) (ManagedInboun
 		return ManagedInbound{}, err
 	}
 	return ManagedInbound{
-		ID: id, Protocol: "vless", InternalPort: port, Mode: "xhttp", SNI: defaults.SNI, Dest: defaults.Dest,
+		ID: id, Name: "VLESS XHTTP", Enabled: true, Protocol: "vless", InternalPort: port, Mode: "xhttp", SNI: defaults.SNI, Dest: defaults.Dest,
 		XHTTPPath: "/" + path, RealityPrivateKey: privateKey, RealityPublicKey: publicKey, RealityShortID: shortID,
 	}, nil
 }
@@ -414,7 +453,7 @@ func makeDefaultState(panelInternalPort, xrayInternalPort int, passwordHash stri
 	s := appState{
 		Schema: 1,
 		Settings: Settings{
-			InternalPort: xrayInternalPort, Protocol: "vless",
+			Name: "VLESS TCP Vision", Enabled: true, InternalPort: xrayInternalPort, Protocol: "vless",
 			Mode: "tcp", SNI: "www.cloudflare.com", Dest: "www.cloudflare.com:443", XHTTPPath: "/" + path,
 		},
 		Users: []User{}, AdminHash: passwordHash,
@@ -439,12 +478,18 @@ func buildXrayConfig(s appState) ([]byte, error) {
 	if err := validateManagedInbounds(s); err != nil {
 		return nil, err
 	}
-	primary, err := buildPrimaryInbound(s)
-	if err != nil {
-		return nil, err
+	inbounds := make([]any, 0, len(s.Inbounds)+1)
+	if s.Settings.Enabled {
+		primary, err := buildPrimaryInbound(s)
+		if err != nil {
+			return nil, err
+		}
+		inbounds = append(inbounds, primary)
 	}
-	inbounds := []any{primary}
 	for _, in := range s.Inbounds {
+		if !in.Enabled {
+			continue
+		}
 		generated, err := buildManagedInbound(in, s.Users)
 		if err != nil {
 			return nil, err
@@ -536,17 +581,21 @@ func buildManagedInbound(in ManagedInbound, users []User) (map[string]any, error
 			if _, err := parseUUID(user.UUID); err != nil {
 				return nil, fmt.Errorf("UUID user %q tidak valid", user.Name)
 			}
-			clients = append(clients, map[string]string{"id": user.UUID})
+			client := map[string]string{"id": user.UUID}
+			if in.Mode == "tcp" {
+				client["flow"] = "xtls-rprx-vision"
+			}
+			clients = append(clients, client)
 		}
-		return map[string]any{
-			"tag": "managed-" + in.ID, "listen": "0.0.0.0", "port": in.InternalPort, "protocol": "vless",
-			"settings": map[string]any{"clients": clients, "decryption": "none"},
-			"streamSettings": map[string]any{
-				"network": "xhttp", "security": "reality",
-				"xhttpSettings":   map[string]any{"path": in.XHTTPPath},
-				"realitySettings": map[string]any{"show": false, "target": in.Dest, "serverNames": []string{in.SNI}, "privateKey": in.RealityPrivateKey, "shortIds": []string{in.RealityShortID}},
-			},
-		}, nil
+		mode := in.Mode
+		if mode == "" {
+			mode = "xhttp"
+		}
+		stream := map[string]any{"network": mode, "security": "reality", "realitySettings": map[string]any{"show": false, "target": in.Dest, "serverNames": []string{in.SNI}, "privateKey": in.RealityPrivateKey, "shortIds": []string{in.RealityShortID}}}
+		if mode == "xhttp" {
+			stream["xhttpSettings"] = map[string]any{"path": in.XHTTPPath}
+		}
+		return map[string]any{"tag": "managed-" + in.ID, "listen": "0.0.0.0", "port": in.InternalPort, "protocol": "vless", "settings": map[string]any{"clients": clients, "decryption": "none"}, "streamSettings": stream}, nil
 	}
 	clients := make([]map[string]any, 0, len(users))
 	for _, user := range users {
@@ -598,7 +647,7 @@ type publicLink struct {
 }
 
 func makeVLESSLinks(s appState, u User) []publicLink {
-	if effectiveInboundProtocol(s.Settings) != "vless" {
+	if !s.Settings.Enabled || effectiveInboundProtocol(s.Settings) != "vless" {
 		return nil
 	}
 	links := make([]publicLink, 0, len(effectiveNATMappings(s.Settings)))
@@ -615,6 +664,9 @@ func makeVLESSLinks(s appState, u User) []publicLink {
 func makeUserLinks(s appState, user User) []publicLink {
 	links := makeVLESSLinks(s, user)
 	for _, in := range s.Inbounds {
+		if !in.Enabled {
+			continue
+		}
 		for mappingIndex, endpoint := range in.NATMappings {
 			host, port, err := parseNATMapping(endpoint)
 			if err != nil {
@@ -638,7 +690,17 @@ func makeManagedLink(in ManagedInbound, user User, host string, port int) (strin
 		if _, err := parseUUID(user.UUID); err != nil {
 			return "", err
 		}
-		params := url.Values{"encryption": {"none"}, "security": {"reality"}, "sni": {in.SNI}, "fp": {"chrome"}, "pbk": {in.RealityPublicKey}, "sid": {in.RealityShortID}, "type": {"xhttp"}, "path": {in.XHTTPPath}, "mode": {"auto"}}
+		mode := in.Mode
+		if mode == "" {
+			mode = "xhttp"
+		}
+		params := url.Values{"encryption": {"none"}, "security": {"reality"}, "sni": {in.SNI}, "fp": {"chrome"}, "pbk": {in.RealityPublicKey}, "sid": {in.RealityShortID}, "type": {mode}}
+		if mode == "tcp" {
+			params.Set("flow", "xtls-rprx-vision")
+		} else {
+			params.Set("path", in.XHTTPPath)
+			params.Set("mode", "auto")
+		}
 		return "vless://" + user.UUID + "@" + address + "?" + params.Encode() + "#" + url.QueryEscape(user.Name), nil
 	case "vmess":
 		if _, err := parseUUID(credential); err != nil {

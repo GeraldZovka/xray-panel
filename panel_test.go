@@ -39,7 +39,7 @@ func TestStateIsStoredPrivate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	st.Inbounds = []ManagedInbound{{ID: "vmess-proto-1", Protocol: "vmess", InternalPort: st.Settings.InternalPort + 1}}
+	st.Inbounds = []ManagedInbound{{ID: "vmess-proto-1", Enabled: true, Protocol: "vmess", InternalPort: st.Settings.InternalPort + 1}}
 	st.Users[0].ProtocolCredentials = map[string]string{"vmess-proto-1": vmessID}
 	if err := validateStoredState(st); err != nil {
 		t.Fatal(err)
