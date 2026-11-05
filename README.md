@@ -2,8 +2,6 @@
 
 Panel web ringan berbasis Go untuk mengelola satu instance Xray dengan banyak akun VLESS. Dibuat untuk VPS Ubuntu ARM64/amd64 dengan RAM terbatas dan NAT yang memetakan port publik ke port internal berbeda.
 
-> **Penting:** isi `GeraldZovka/xray-panel` dengan pemilik dan nama repo GitHub Anda. Installer meng-clone repo yang sama ke `/opt/xray-panel`; URL `raw.githubusercontent.com` saja tidak cukup untuk mengetahui URL clone-nya.
-
 ## Isi repo
 
 ```text
