@@ -32,15 +32,16 @@ bash <(curl -fsSL https://raw.githubusercontent.com/GeraldZovka/xray-panel/main/
 
 Ganti `GeraldZovka/xray-panel` pada URL raw dengan repo Anda; installer lalu meminta URL clone HTTPS repo untuk menyimpannya ke `/opt/xray-panel`. Agar tak perlu prompt itu, jalankan dengan `XRAY_PANEL_REPO=https://github.com/GeraldZovka/xray-panel.git` sebelum `bash`.
 
-Installer meminta alamat publik, port publik/internal panel, port publik/internal Xray, password admin, dan pilihan TLS. Default yang dipilih:
+Installer meminta alamat publik panel, port publik/internal panel, jumlah serta alamat mapping NAT Xray, port internal Xray, password admin, dan pilihan TLS. Batas mapping Xray adalah **9 endpoint**; setiap endpoint dimasukkan sebagai `host:port`. Default yang dipilih:
 
-- Host publik: `vectis-nat-1-20151-ixt.vps-eu1.sumopod.my.id`
+- Host publik panel: `vectis-nat-1-20151-ybh.vps-eu1.sumopod.my.id`
 - Panel: publik `8080` → internal `8080`
-- Xray: publik `20151` → internal `443`
+- Xray NAT: `vectis-nat-1-20151-ybh.vps-eu1.sumopod.my.id:20151` dan `vectis-nat-1-20152-zxf.vps-eu1.sumopod.my.id:20152`
+- Port internal Xray bersama: `443`
 - REALITY SNI/dest awal: `www.cloudflare.com` / `www.cloudflare.com:443`
 - Koneksi awal: VLESS + TCP + REALITY + Vision
 
-Port panel `8080`, port internal Xray `443`, dan target REALITY adalah **asumsi awal yang dapat diubah**. Installer mengecek agar port publik panel dan Xray tidak sama, port internal keduanya berbeda, lalu mengecek port internal yang benar-benar akan di-bind menggunakan daftar listener TCP lokal dan berhenti jika port terpakai. Port publik NAT bukan socket lokal, sehingga tidak bisa diperiksa dari VPS; pastikan port itu dialokasikan/dipetakan di panel provider.
+Port panel `8080`, port internal Xray `443`, mapping NAT, dan target REALITY adalah **asumsi awal yang dapat diubah**. Semua endpoint Xray harus diarahkan provider ke port internal Xray yang sama sebagai TCP; mapping panel adalah mapping terpisah. Installer mengecek jumlah/format mapping, duplikasi endpoint, port internal yang berbeda untuk panel dan Xray, lalu mengecek listener TCP lokal dan berhenti jika port internal sudah dipakai. Port publik NAT tidak dapat diperiksa dari VPS; pastikan setiap endpoint tersedia pada provider.
 
 Jika password admin dikosongkan, installer membuat password acak dan menampilkannya **sekali setelah state tersimpan**. Simpan di password manager. Rerun installer tidak mereset password, key, user, atau pengaturan yang tersimpan.
 
@@ -48,11 +49,18 @@ Installer memasang dependency OS dari repositori Ubuntu, meng-clone repo, memban
 
 ## NAT, port, dan TCP saja
 
-NAT provider harus mengarahkan **panel publik → panel internal** dan **Xray publik → Xray internal**, keduanya sebagai TCP. Contoh default: `8080 → 8080` untuk panel dan `20151 → 443` untuk Xray. Jika provider hanya memberi mapping Xray `20151 → 443`, panel juga tetap memerlukan mapping TCP publik tersendiri; alamat domain saja tidak membuka port.
+NAT provider harus mengarahkan **panel publik → panel internal** dan setiap **Xray publik → port internal Xray yang sama**, semuanya sebagai TCP. Contoh Xray yang dipakai aplikasi:
+
+```text
+vectis-nat-1-20151-ybh.vps-eu1.sumopod.my.id:20151 → 443/TCP
+vectis-nat-1-20152-zxf.vps-eu1.sumopod.my.id:20152 → 443/TCP
+```
+
+Masukkan alamat publik Xray satu `host:port` per baris di Pengaturan. Maksimal **9 mapping unik**. Setiap pengguna memperoleh tautan VLESS dan QR terpisah untuk setiap endpoint, jadi bisa dipilih alamat yang berfungsi. Xray tetap hanya membuka satu port internal; arahkan semua mapping NAT ke port internal itu. Mapping panel tetap perlu disediakan terpisah; nama domain saja tidak membuka port.
 
 UFW, bila aktif, diizinkan untuk port internal TCP. UDP tidak dipakai oleh listener proxy; aturan routing Xray mengirim trafik UDP ke outbound `blackhole`. Xray tetap meneruskan trafik TCP pengguna ke tujuan yang diminta sebagai fungsi proxy biasa. Pastikan firewall/provider juga tidak memaksa UDP.
 
-Port publik Xray yang muncul di `vless://` adalah port provider, sedangkan Xray bind ke port internal. Mengubah port Xray dari panel akan memvalidasi config dan me-restart service; NAT provider dan aturan UFW/provider tidak berubah otomatis. Buka port TCP internal baru secara manual bila UFW aktif.
+Port publik Xray yang muncul di tiap tautan `vless://` adalah port provider, sedangkan Xray bind ke port internal bersama. Mengubah port internal Xray dari panel akan memvalidasi config dan me-restart service; NAT provider dan aturan UFW/provider tidak berubah otomatis. Buka port TCP internal baru secara manual bila UFW aktif.
 
 ## Update dan uninstall
 
@@ -64,13 +72,13 @@ XRAY_PANEL_REPO=https://github.com/GeraldZovka/xray-panel.git bash <(curl -fsSL 
 
 Tombol **Perbarui Xray** di panel hanya menjalankan updater Xray resmi. Pembaruan dapat memutus sesi proxy aktif sesaat. Jika SSH Anda sendiri melewati Xray, update/restart dapat memutus koneksi SSH.
 
-Uninstall panel (meminta konfirmasi dengan mengetik `uninstall`):
+Uninstall **total** (meminta konfirmasi dengan mengetik `hapus-total`):
 
 ```bash
 XRAY_PANEL_REPO=https://github.com/GeraldZovka/xray-panel.git bash <(curl -fsSL https://raw.githubusercontent.com/GeraldZovka/xray-panel/main/install.sh) uninstall
 ```
 
-Untuk menghindari penghapusan layanan VPS lain, `uninstall` **hanya** menghapus panel, helper dan unit panel. Xray tetap berjalan dengan config aktif dan drop-in credential-nya; data disalin ke `/var/backups/xray-panel-uninstalled-*`, file data aslinya, environment `/etc/xray-panel.env`, sertifikat TLS, akun sistem `xray-panel`, aturan UFW, clone `/opt/xray-panel`, dan instalasi Xray tidak dihapus. Environment/state dipertahankan agar pemasangan ulang tetap idempoten; pembersihan tersebut sengaja manual.
+Perintah ini menghapus panel dan instalasi Xray melalui uninstaller resmi XTLS, termasuk config aktif, key REALITY, pengguna, state, sertifikat TLS yang dikelola panel, akun service, clone `/opt/xray-panel`, backup lokal yang dibuat panel, dan hanya aturan UFW yang memiliki komentar `xray-panel`. **Tidak ada state atau backup yang disimpan.** Jangan jalankan bila Anda ingin mempertahankan data atau memakai instalasi Xray yang sudah ada untuk layanan lain. Paket OS umum seperti `curl`, Git, Go, `sudo`, UFW, dan riwayat journald bersama sengaja tetap ada agar layanan lain di VPS tidak terganggu. Uninstaller resmi XTLS perlu diunduh; bila jaringan gagal, pembersihan dihentikan sebelum data panel dihapus.
 
 ## Panel dan fitur
 
@@ -79,7 +87,7 @@ Untuk menghindari penghapusan layanan VPS lain, `uninstall` **hanya** menghapus 
 - Dashboard menunjukkan status/versi/uptime Xray, estimasi CPU host (sampel singkat), load average host, perkiraan RSS proses Xray, kontrol service, dan log terakhir.
 - Tambah, nonaktifkan, aktifkan, atau hapus pengguna. Setiap user mendapat UUID. Link VLESS dapat disalin dan QR dibuat lokal tanpa CDN.
 - Pilih **satu mode aktif** untuk instance ini: `tcp` (Vision) atau `xhttp`. Beralih mode mengubah link semua user karena hanya satu inbound/port internal yang dikelola.
-- Pengaturan publik/SNI/dest/port diperiksa server-side. Config baru ditulis ke file sementara, diuji memakai `xray run -test -config`, lalu diterapkan dan service direstart. Jika uji atau restart gagal, helper root memulihkan config sebelumnya; UI menampilkan error tanpa private key.
+- Daftar NAT (1–9 endpoint `host:port`), SNI, dest, dan port internal diperiksa server-side. Setiap pengguna mendapat satu link/QR per endpoint publik. Config baru ditulis ke file sementara, diuji memakai `xray run -test -config`, lalu diterapkan dan service direstart. Jika uji atau restart gagal, helper root memulihkan config sebelumnya; UI menampilkan error tanpa private key.
 - Backup adalah file JSON yang mengandung key REALITY privat untuk bisa memulihkan koneksi. File tidak dirender ke halaman, tetapi tetap rahasia: simpan terenkripsi dan jangan unggah ke repo.
 - Dukungan HTTPS: installer dapat membuat sertifikat self-signed, atau memakai cert/key yang Anda sediakan. Sertifikat self-signed tetap menghasilkan peringatan browser. Untuk sertifikat terpercaya, gunakan domain dan sertifikat CA; reverse proxy TLS juga bisa dipakai. Tanpa TLS, panel menampilkan peringatan HTTP.
 
@@ -116,7 +124,7 @@ Lakukan lebih dulu pada VPS uji atau dengan backup yang dapat dipulihkan.
 8. **Mode XHTTP:** ubah ke XHTTP, buat/scan ulang link dengan klien yang mendukung VLESS XHTTP REALITY, lalu uji. Kembali ke TCP Vision bila klien tidak mendukungnya.
 9. **Backup/restore:** unduh backup, simpan secara aman, ubah user/settings, restore backup dan pastikan config aktif dipulihkan. Pastikan restore tidak mengganti password admin yang sedang dipakai.
 10. **Password/TLS:** ubah password admin, pastikan sesi lama harus login ulang; bila TLS diaktifkan, buka `https://HOST:PORT` dan verifikasi bahwa browser menunjukkan TLS (sertifikat self-signed akan tetap diberi warning).
-11. **Update/uninstall:** pada staging, uji update dan pastikan pengguna tetap ada. Uji uninstall dan pastikan panel berhenti tetapi Xray/config aktif tetap tersedia.
+11. **Update/uninstall:** pada staging, uji update dan pastikan pengguna tetap ada. Untuk uninstall total, pastikan konfirmasi `hapus-total` menjelaskan bahwa Xray, konfigurasi, key, pengguna, sertifikat, backup, dan aturan firewall bertanda aplikasi akan dihapus.
 
 ## Troubleshooting
 

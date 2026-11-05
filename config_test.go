@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -55,6 +56,51 @@ func TestBuildTCPConfigAndVLESSLink(t *testing.T) {
 	}
 }
 
+func TestNATMappingsGenerateOneLinkPerEndpoint(t *testing.T) {
+	s := testState(t)
+	s.Settings.NATMappings = []string{
+		"vectis-nat-1-20151-ybh.vps-eu1.sumopod.my.id:20151",
+		"vectis-nat-1-20152-zxf.vps-eu1.sumopod.my.id:20152",
+	}
+	if err := validateSettings(s.Settings); err != nil {
+		t.Fatal(err)
+	}
+	links := makeVLESSLinks(s, s.Users[0])
+	if len(links) != 2 {
+		t.Fatalf("got %d links, want 2", len(links))
+	}
+	for i, address := range s.Settings.NATMappings {
+		if links[i].Address != address || !strings.Contains(links[i].Link, "@"+address+"?") {
+			t.Fatalf("link %d does not use endpoint %q: %+v", i, address, links[i])
+		}
+	}
+	if s.Settings.InternalPort != 443 {
+		t.Fatalf("shared internal target port = %d, want 443", s.Settings.InternalPort)
+	}
+}
+
+func TestNATMappingsLimitAndLegacyCompatibility(t *testing.T) {
+	s := testState(t)
+	s.Settings.NATMappings = nil // Existing schema-1 states only store publicHost/publicPort.
+	if err := validateSettings(s.Settings); err != nil {
+		t.Fatalf("legacy single-endpoint state rejected: %v", err)
+	}
+	for i := 0; i < 9; i++ {
+		s.Settings.NATMappings = append(s.Settings.NATMappings, "nat-"+strconv.Itoa(i)+".example.net:"+strconv.Itoa(20151+i))
+	}
+	if err := validateSettings(s.Settings); err != nil {
+		t.Fatalf("nine mappings rejected: %v", err)
+	}
+	s.Settings.NATMappings = append(s.Settings.NATMappings, "nat-10.example.net:20160")
+	if err := validateSettings(s.Settings); err == nil {
+		t.Fatal("accepted ten NAT mappings")
+	}
+	s.Settings.NATMappings = []string{"nat.example.net:20151", "nat.example.net:20151"}
+	if err := validateSettings(s.Settings); err == nil {
+		t.Fatal("accepted duplicate NAT mapping")
+	}
+}
+
 func TestBuildXHTTPConfig(t *testing.T) {
 	s := testState(t)
 	s.Settings.Mode = "xhttp"
@@ -90,7 +136,7 @@ func TestValidateSettingsRejectsUnsafeValues(t *testing.T) {
 		t.Fatal("accepted port zero")
 	}
 	bad = s.Settings
-	bad.PublicHost = "example.net/path"
+	bad.NATMappings = []string{"example.net/path:20151"}
 	if validateSettings(bad) == nil {
 		t.Fatal("accepted path in host")
 	}

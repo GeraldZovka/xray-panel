@@ -116,14 +116,53 @@ validate_host(){
   [[ -n $h && ${#h} -le 253 && $h != *[!a-zA-Z0-9.:-]* ]] || return 1
   [[ $h != *..* && $h != .* && $h != *. ]] || return 1
 }
+validate_nat_mapping(){
+  local endpoint=$1 host port
+  [[ $endpoint =~ ^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+):([0-9]{1,5})$ ]] || return 1
+  host=${BASH_REMATCH[1]};port=${BASH_REMATCH[2]}
+  if [[ $host == \[*\] ]]; then host=${host:1:${#host}-2}; fi
+  validate_host "$host" || return 1
+  (( 10#$port >= 1 && 10#$port <= 65535 ))
+}
+ask_nat_mappings(){
+  local answer count index default endpoint existing first
+  while :; do
+    read -r -p 'Jumlah mapping NAT Xray (1-9) [2]: ' answer || true
+    count=${answer:-2}
+    if [[ $count =~ ^[1-9]$ ]]; then break; fi
+    printf 'Jumlah mapping harus angka 1 sampai 9.\n'
+  done
+  NAT_MAPPING_LIST=()
+  for ((index=1; index<=count; index++)); do
+    default=
+    case $index in
+      1) default='vectis-nat-1-20151-ybh.vps-eu1.sumopod.my.id:20151' ;;
+      2) default='vectis-nat-1-20152-zxf.vps-eu1.sumopod.my.id:20152' ;;
+    esac
+    read -r -p "Mapping NAT Xray #$index host:port${default:+ [$default]}: " answer || true
+    endpoint=${answer:-$default}
+    validate_nat_mapping "$endpoint" || die "Format mapping NAT tidak valid: $endpoint (gunakan host:port)."
+    for existing in "${NAT_MAPPING_LIST[@]}"; do
+      [[ ${existing,,} != "${endpoint,,}" ]] || die "Mapping NAT duplikat: $endpoint"
+    done
+    NAT_MAPPING_LIST+=("$endpoint")
+  done
+  XRAY_NAT_MAPPINGS=$(IFS=,; printf '%s' "${NAT_MAPPING_LIST[*]}")
+  first=${NAT_MAPPING_LIST[0]}
+  XRAY_FIRST_PORT=${first##*:}
+  if [[ $first == \[*\]* ]]; then XRAY_FIRST_HOST=${first%%]*};XRAY_FIRST_HOST=${XRAY_FIRST_HOST#\[}; else XRAY_FIRST_HOST=${first%:*}; fi
+}
 port_in_use(){
   local port=$1 output
   output=$(ss -H -ltn "sport = :$port" 2>/dev/null || true)
   [[ -n $output ]]
 }
 check_new_ports(){
-  local panel_public=$1 panel_internal=$2 xray_public=$3 xray_internal=$4
-  [[ $panel_public != "$xray_public" ]] || die 'Port publik panel dan Xray harus berbeda pada provider NAT.'
+  local panel_public=$1 panel_internal=$2 xray_mappings=$3 xray_internal=$4 mapping public_port
+  for mapping in ${xray_mappings//,/ }; do
+    public_port=${mapping##*:}
+    [[ $panel_public != "$public_port" ]] || die 'Port publik panel dan Xray harus berbeda pada provider NAT.'
+  done
   [[ $panel_internal != "$xray_internal" ]] || die 'Port internal panel dan Xray harus berbeda.'
   for p in "$panel_internal" "$xray_internal"; do
     if port_in_use "$p"; then
@@ -227,14 +266,14 @@ install_fresh(){
     say 'Update selesai; konfigurasi, pengguna, key dan password dipertahankan.'
     return
   fi
-  say 'Pengaturan awal. Port publik harus dipetakan ke port internal oleh provider NAT.'
-  ask_value 'Alamat publik server' 'vectis-nat-1-20151-ixt.vps-eu1.sumopod.my.id' PUBLIC_HOST
+  say 'Pengaturan awal. Setiap endpoint Xray publik harus dipetakan provider ke port internal Xray yang sama.'
+  ask_value 'Alamat publik panel (host/IP untuk URL panel)' 'vectis-nat-1-20151-ybh.vps-eu1.sumopod.my.id' PUBLIC_HOST
   validate_host "$PUBLIC_HOST" || die 'Hostname/IP publik tidak valid.'
   ask_port 'Port publik panel' 8080 PANEL_PUBLIC
   ask_port 'Port internal panel' 8080 PANEL_INTERNAL
-  ask_port 'Port publik Xray' 20151 XRAY_PUBLIC
+  ask_nat_mappings
   ask_port 'Port internal Xray' 443 XRAY_INTERNAL
-  check_new_ports "$PANEL_PUBLIC" "$PANEL_INTERNAL" "$XRAY_PUBLIC" "$XRAY_INTERNAL"
+  check_new_ports "$PANEL_PUBLIC" "$PANEL_INTERNAL" "$XRAY_NAT_MAPPINGS" "$XRAY_INTERNAL"
   ask_password
   build_app
   ensure_xray
@@ -243,7 +282,7 @@ install_fresh(){
   write_service_config
   ask_tls
   if [[ -n $TLS_CERT ]]; then write_service_config; fi
-  printf '%s' "$ADMIN_PASSWORD" | /usr/local/bin/xray-panel init --state "$STATE_FILE" --host "$PUBLIC_HOST" --panel-public-port "$PANEL_PUBLIC" --panel-internal-port "$PANEL_INTERNAL" --xray-public-port "$XRAY_PUBLIC" --xray-internal-port "$XRAY_INTERNAL"
+  printf '%s' "$ADMIN_PASSWORD" | /usr/local/bin/xray-panel init --state "$STATE_FILE" --host "$XRAY_FIRST_HOST" --panel-public-port "$PANEL_PUBLIC" --panel-internal-port "$PANEL_INTERNAL" --xray-public-port "$XRAY_FIRST_PORT" --xray-internal-port "$XRAY_INTERNAL" --nat-mappings "$XRAY_NAT_MAPPINGS"
   chown "$PANEL_USER":"$PANEL_USER" "$STATE_FILE"
   chmod 0600 "$STATE_FILE"
   if [[ -n $GENERATED_PASSWORD ]]; then printf '\nPASSWORD ADMIN (simpan sekarang; tidak akan ditampilkan lagi):\n%s\n\n' "$GENERATED_PASSWORD"; fi
@@ -254,10 +293,11 @@ install_fresh(){
   if [[ $display_host == *:* ]]; then display_host="[$display_host]"; fi
   say 'Instalasi selesai.'
   printf 'Panel: %s://%s:%s\n' "$scheme" "$display_host" "$PANEL_PUBLIC"
-  printf 'Xray:  %s:%s publik -> port internal %s/TCP\n' "$display_host" "$XRAY_PUBLIC" "$XRAY_INTERNAL"
+  printf 'Xray NAT endpoints (masing-masing -> port internal %s/TCP):\n' "$XRAY_INTERNAL"
+  for mapping in "${NAT_MAPPING_LIST[@]}"; do printf '  %s\n' "$mapping"; done
   printf 'Mode awal: VLESS + TCP + REALITY + Vision. UDP diblokir.\n'
   printf 'Port UFW internal yang diizinkan: %s/TCP dan %s/TCP (jika UFW aktif).\n' "$PANEL_INTERNAL" "$XRAY_INTERNAL"
-  printf 'Periksa panel publik provider NAT memetakan %s -> %s dan Xray memetakan %s -> %s.\n' "$PANEL_PUBLIC" "$PANEL_INTERNAL" "$XRAY_PUBLIC" "$XRAY_INTERNAL"
+  printf 'Periksa provider NAT: mapping panel %s -> %s; setiap endpoint Xray di atas -> %s.\n' "$PANEL_PUBLIC" "$PANEL_INTERNAL" "$XRAY_INTERNAL"
   if [[ -z $TLS_CERT ]]; then printf 'PERINGATAN: panel masih HTTP. Gunakan reverse proxy HTTPS atau aktifkan TLS.\n'; fi
 }
 update_existing(){
@@ -270,24 +310,59 @@ update_existing(){
   systemctl restart xray-panel.service
   say 'Update selesai; state, pengguna, key, password, port dan pengaturan panel dipertahankan.'
 }
+remove_panel_ufw_rules(){
+  command -v ufw >/dev/null 2>&1 || return 0
+  local number
+  while :; do
+    number=$(ufw status numbered 2>/dev/null | grep -E '# xray-panel internal (panel|xray)( |$)' | sed -nE 's/^[[:space:]]*\[[[:space:]]*([0-9]+)\].*/\1/p' | head -n 1)
+    [[ -n $number ]] || break
+    ufw --force delete "$number" >/dev/null || break
+  done
+}
 uninstall_panel(){
   require_root;check_platform
   [[ -d /etc/systemd/system ]] || die 'systemd tidak tersedia.'
-  printf 'Ini menghapus panel saja. Xray, konfigurasi aktif, port UFW, sertifikat TLS dan data akan dipertahankan sebagai cadangan.\n'
-  read -r -p 'Lanjutkan? ketik uninstall: ' confirm || true
-  [[ $confirm == uninstall ]] || die 'Dibatalkan.'
+  printf 'PURGE TOTAL: panel, Xray, konfigurasi, key/user, sertifikat TLS, state/backup lokal, akun service, clone source, dan aturan UFW bertanda xray-panel akan DIHAPUS PERMANEN. Paket OS umum dan riwayat jurnal systemd bersama tetap ada.\n'
+  read -r -p 'Lanjutkan? ketik hapus-total: ' confirm || true
+  [[ $confirm == hapus-total ]] || die 'Dibatalkan; tidak ada perubahan.'
+
+  local has_xray_unit=0 remover=
+  if systemctl list-unit-files --type=service --no-legend 2>/dev/null | awk '$1 == "xray.service" || $1 == "xray@.service" { found=1 } END { exit !found }'; then has_xray_unit=1; fi
+  if (( has_xray_unit )); then
+    remover=$(mktemp /tmp/xray-remove-XXXXXX.sh)
+    if ! curl -fsSL "$XRAY_INSTALL_URL" -o "$remover"; then
+      rm -f "$remover"
+      die 'Tidak dapat mengambil uninstaller resmi XTLS; tidak ada komponen yang dihapus.'
+    fi
+    if ! bash "$remover" remove --purge; then
+      rm -f "$remover"
+      die 'Uninstaller resmi XTLS gagal. Komponen panel belum dibersihkan; periksa status Xray sebelum mencoba lagi.'
+    fi
+    rm -f "$remover"
+  else
+    systemctl disable --now xray.service >/dev/null 2>&1 || true
+    rm -f /usr/local/bin/xray /etc/systemd/system/xray.service /etc/systemd/system/xray@.service /etc/logrotate.d/xray
+    rm -rf /usr/local/share/xray /var/log/xray /etc/systemd/system/xray.service.d /etc/systemd/system/xray@.service.d
+  fi
+
   systemctl disable --now "$PANEL_UNIT" >/dev/null 2>&1 || true
   rm -f "/etc/systemd/system/$PANEL_UNIT" /etc/sudoers.d/xray-panel /usr/local/bin/xray-panel /usr/local/sbin/xray-panel-helper
+  rm -f /etc/xray-panel.env /etc/systemd/system/xray.service.d/90-xray-panel-credentials.conf "$XRAY_CONFIG"
+  rmdir /etc/systemd/system/xray.service.d /etc/systemd/system/xray@.service.d 2>/dev/null || true
+  rm -rf /etc/xray-panel "$STATE_DIR" "$APP_DIR"
+  find /var/backups -maxdepth 1 -mindepth 1 -type d -name 'xray-panel-uninstalled-*' -exec rm -rf -- {} + 2>/dev/null || true
+  shopt -s nullglob
+  local config_backups=(/usr/local/etc/xray/config.json.pre-xray-panel.*)
+  ((${#config_backups[@]} == 0)) || rm -f -- "${config_backups[@]}"
+  shopt -u nullglob
+  rmdir /usr/local/etc/xray 2>/dev/null || true
+  remove_panel_ufw_rules
+  if id "$PANEL_USER" >/dev/null 2>&1; then userdel --remove "$PANEL_USER" >/dev/null 2>&1 || true; fi
+  if getent group "$PANEL_USER" >/dev/null 2>&1; then groupdel "$PANEL_USER" >/dev/null 2>&1 || true; fi
   systemctl daemon-reload
-  if [[ -d $STATE_DIR ]]; then
-    local backup="/var/backups/xray-panel-uninstalled-$(date -u +%Y%m%dT%H%M%SZ)"
-    install -d -o root -g root -m 0700 /var/backups
-    cp -a "$STATE_DIR" "$backup"
-    chmod -R go-rwx "$backup"
-    printf 'State disimpan di %s\n' "$backup"
-  fi
-  say 'Panel dihapus. Xray tetap berjalan dan config aktif tidak diubah.'
-  printf 'Aturan UFW (jika ada) dan sertifikat TLS tidak dihapus otomatis agar aturan VPS lain tidak terganggu.\n'
+  systemctl reset-failed "$PANEL_UNIT" xray.service >/dev/null 2>&1 || true
+  say 'Uninstall total selesai: panel, Xray, data/config, dan aturan UFW milik panel telah dihapus.'
+  printf 'Paket OS umum (mis. curl, git, Go, sudo, dan UFW) tetap terpasang agar software lain di VPS tidak terganggu.\n'
 }
 
 require_root

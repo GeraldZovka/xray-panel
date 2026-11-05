@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -50,11 +51,12 @@ type server struct {
 }
 
 type publicUser struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Enabled   bool      `json:"enabled"`
-	CreatedAt time.Time `json:"createdAt"`
-	Link      string    `json:"link"`
+	ID        string       `json:"id"`
+	Name      string       `json:"name"`
+	Enabled   bool         `json:"enabled"`
+	CreatedAt time.Time    `json:"createdAt"`
+	Link      string       `json:"link"`
+	Links     []publicLink `json:"links"`
 }
 type publicState struct {
 	CSRF     string       `json:"csrf"`
@@ -149,7 +151,8 @@ func main() {
 func initialize(args []string) error {
 	fs := newFlagSet("init")
 	statePath := fs.String("state", defaultStatePath, "state file path")
-	host := fs.String("host", "vectis-nat-1-20151-ixt.vps-eu1.sumopod.my.id", "public hostname/IP")
+	host := fs.String("host", "vectis-nat-1-20151-ybh.vps-eu1.sumopod.my.id", "public hostname/IP")
+	natMappings := fs.String("nat-mappings", "", "comma-separated public NAT endpoints in host:port form (maximum 9)")
 	panelPublic := fs.Int("panel-public-port", 8080, "public panel port")
 	panelInternal := fs.Int("panel-internal-port", 8080, "internal panel port")
 	xrayPublic := fs.Int("xray-public-port", 20151, "public Xray port")
@@ -181,6 +184,14 @@ func initialize(args []string) error {
 	st, err := makeDefaultState(*host, *panelPublic, *panelInternal, *xrayPublic, *xrayInternal, string(hash))
 	if err != nil {
 		return err
+	}
+	if *natMappings != "" {
+		st.Settings.NATMappings = strings.Split(*natMappings, ",")
+		firstHost, firstPort, err := parseNATMapping(st.Settings.NATMappings[0])
+		if err != nil {
+			return err
+		}
+		st.Settings.PublicHost, st.Settings.PublicPort = firstHost, firstPort
 	}
 	if err := validateSettings(st.Settings); err != nil {
 		return err
@@ -348,7 +359,12 @@ func (s *server) handleState(w http.ResponseWriter, r *http.Request) {
 	}
 	users := make([]publicUser, 0, len(st.Users))
 	for _, u := range st.Users {
-		users = append(users, publicUser{ID: u.ID, Name: u.Name, Enabled: u.Enabled, CreatedAt: u.CreatedAt, Link: makeVLESSLink(st, u)})
+		links := makeVLESSLinks(st, u)
+		primary := ""
+		if len(links) > 0 {
+			primary = links[0].Link
+		}
+		users = append(users, publicUser{ID: u.ID, Name: u.Name, Enabled: u.Enabled, CreatedAt: u.CreatedAt, Link: primary, Links: links})
 	}
 	out := publicState{CSRF: csrf, Settings: st.Settings, Users: users, Running: resp.Status == "active", Version: resp.Version, Uptime: resp.Uptime, CPU: resp.CPU, Load: resp.Load, RAM: resp.RAM, Logs: logs, HTTPS: isHTTPS(r)}
 	writeJSON(w, http.StatusOK, out)
@@ -483,12 +499,26 @@ func (s *server) handleQR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.URL.Query().Get("id")
+	mappingIndex := 0
+	if value := r.URL.Query().Get("mapping"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 0 {
+			http.Error(w, "mapping NAT tidak valid", http.StatusBadRequest)
+			return
+		}
+		mappingIndex = parsed
+	}
 	s.mu.Lock()
 	st := s.state
 	s.mu.Unlock()
 	for _, u := range st.Users {
 		if u.ID == id {
-			png, err := qrcode.Encode(makeVLESSLink(st, u), qrcode.Medium, 256)
+			links := makeVLESSLinks(st, u)
+			if mappingIndex >= len(links) {
+				http.Error(w, "mapping NAT tidak ditemukan", http.StatusBadRequest)
+				return
+			}
+			png, err := qrcode.Encode(links[mappingIndex].Link, qrcode.Medium, 256)
 			if err != nil {
 				http.Error(w, "gagal membuat QR", 500)
 				return
@@ -593,6 +623,16 @@ func (s *server) updateSettings(raw map[string]json.RawMessage) error {
 	in.PublicHost = strings.TrimSpace(in.PublicHost)
 	in.SNI = strings.TrimSpace(in.SNI)
 	in.Dest = strings.TrimSpace(in.Dest)
+	for i := range in.NATMappings {
+		in.NATMappings[i] = strings.TrimSpace(in.NATMappings[i])
+	}
+	if len(in.NATMappings) > 0 {
+		host, port, err := parseNATMapping(in.NATMappings[0])
+		if err != nil {
+			return err
+		}
+		in.PublicHost, in.PublicPort = host, port
+	}
 	return s.transact(func(st *appState) error { st.Settings = in; return validateSettings(st.Settings) })
 }
 func (s *server) changePassword(raw map[string]json.RawMessage) error {

@@ -17,13 +17,14 @@ import (
 )
 
 type Settings struct {
-	PublicHost   string `json:"publicHost"`
-	PublicPort   int    `json:"publicPort"`
-	InternalPort int    `json:"internalPort"`
-	Mode         string `json:"mode"`
-	SNI          string `json:"sni"`
-	Dest         string `json:"dest"`
-	XHTTPPath    string `json:"xhttpPath"`
+	PublicHost   string   `json:"publicHost"`
+	PublicPort   int      `json:"publicPort"`
+	NATMappings  []string `json:"natMappings,omitempty"`
+	InternalPort int      `json:"internalPort"`
+	Mode         string   `json:"mode"`
+	SNI          string   `json:"sni"`
+	Dest         string   `json:"dest"`
+	XHTTPPath    string   `json:"xhttpPath"`
 }
 
 type User struct {
@@ -61,12 +62,63 @@ func validateHostname(s string) error {
 	return nil
 }
 
-func validateSettings(s Settings) error {
-	if err := validateHostname(s.PublicHost); err != nil {
-		return err
+func parseNATMapping(endpoint string) (string, int, error) {
+	if endpoint != strings.TrimSpace(endpoint) || len(endpoint) > 260 {
+		return "", 0, errors.New("mapping NAT harus berupa host:port tanpa spasi di tepi")
 	}
-	if !validPort(s.PublicPort) || !validPort(s.InternalPort) {
+	host, port, err := net.SplitHostPort(endpoint)
+	if err != nil || host == "" {
+		return "", 0, errors.New("mapping NAT harus berupa host:port; IPv6 harus memakai tanda kurung siku")
+	}
+	if net.ParseIP(host) == nil {
+		if err := validateHostname(host); err != nil {
+			return "", 0, fmt.Errorf("host mapping NAT tidak valid: %w", err)
+		}
+	}
+	p, err := strconv.Atoi(port)
+	if err != nil || !validPort(p) {
+		return "", 0, errors.New("port mapping NAT harus antara 1 dan 65535")
+	}
+	return host, p, nil
+}
+
+func effectiveNATMappings(s Settings) []string {
+	if len(s.NATMappings) > 0 {
+		return s.NATMappings
+	}
+	if s.PublicHost != "" && validPort(s.PublicPort) {
+		return []string{net.JoinHostPort(s.PublicHost, strconv.Itoa(s.PublicPort))}
+	}
+	return nil
+}
+
+func validateSettings(s Settings) error {
+	if !validPort(s.InternalPort) {
 		return errors.New("port harus antara 1 dan 65535")
+	}
+	mappings := effectiveNATMappings(s)
+	if len(mappings) == 0 || len(mappings) > 9 {
+		return errors.New("jumlah mapping NAT harus antara 1 dan 9")
+	}
+	seenMappings := make(map[string]bool, len(mappings))
+	for _, mapping := range mappings {
+		host, port, err := parseNATMapping(mapping)
+		if err != nil {
+			return err
+		}
+		key := strings.ToLower(host) + ":" + strconv.Itoa(port)
+		if seenMappings[key] {
+			return errors.New("mapping NAT duplikat")
+		}
+		seenMappings[key] = true
+	}
+	if len(s.NATMappings) == 0 {
+		if err := validateHostname(s.PublicHost); err != nil {
+			return err
+		}
+		if !validPort(s.PublicPort) {
+			return errors.New("port harus antara 1 dan 65535")
+		}
 	}
 	if s.Mode != "tcp" && s.Mode != "xhttp" {
 		return errors.New("mode harus tcp atau xhttp")
@@ -141,7 +193,8 @@ func makeDefaultState(host string, panelPublicPort, panelInternalPort, xrayPubli
 		Schema: 1,
 		Settings: Settings{
 			PublicHost: host, PublicPort: xrayPublicPort, InternalPort: xrayInternalPort,
-			Mode: "tcp", SNI: "www.cloudflare.com", Dest: "www.cloudflare.com:443", XHTTPPath: "/" + path,
+			NATMappings: []string{net.JoinHostPort(host, strconv.Itoa(xrayPublicPort))},
+			Mode:        "tcp", SNI: "www.cloudflare.com", Dest: "www.cloudflare.com:443", XHTTPPath: "/" + path,
 		},
 		Users: []User{}, AdminHash: passwordHash,
 		RealityPrivateKey: priv, RealityPublicKey: pub, RealityShortID: shortID,
@@ -208,6 +261,31 @@ func buildXrayConfig(s appState) ([]byte, error) {
 }
 
 func makeVLESSLink(s appState, u User) string {
+	links := makeVLESSLinks(s, u)
+	if len(links) == 0 {
+		return ""
+	}
+	return links[0].Link
+}
+
+type publicLink struct {
+	Address string `json:"address"`
+	Link    string `json:"link"`
+}
+
+func makeVLESSLinks(s appState, u User) []publicLink {
+	links := make([]publicLink, 0, len(effectiveNATMappings(s.Settings)))
+	for _, endpoint := range effectiveNATMappings(s.Settings) {
+		host, port, err := parseNATMapping(endpoint)
+		if err != nil {
+			continue
+		}
+		links = append(links, publicLink{Address: endpoint, Link: makeVLESSLinkForEndpoint(s, u, host, port)})
+	}
+	return links
+}
+
+func makeVLESSLinkForEndpoint(s appState, u User, host string, port int) string {
 	params := url.Values{}
 	params.Set("encryption", "none")
 	params.Set("security", "reality")
@@ -223,8 +301,7 @@ func makeVLESSLink(s appState, u User) string {
 		params.Set("path", s.Settings.XHTTPPath)
 		params.Set("mode", "auto")
 	}
-	host := s.Settings.PublicHost
-	return "vless://" + u.UUID + "@" + net.JoinHostPort(host, strconv.Itoa(s.Settings.PublicPort)) + "?" + params.Encode() + "#" + url.QueryEscape(u.Name)
+	return "vless://" + u.UUID + "@" + net.JoinHostPort(host, strconv.Itoa(port)) + "?" + params.Encode() + "#" + url.QueryEscape(u.Name)
 }
 
 func parseUUID(s string) ([]byte, error) {
