@@ -102,53 +102,50 @@ ask_port(){
     answer=
     if ! read -r -p "$label (1-65535): " answer; then die "Input untuk $label diperlukan."; fi
     if [[ -z $answer ]]; then printf 'Port wajib diisi; masukkan angka antara 1 dan 65535.\n'; continue; fi
-    if [[ $answer =~ ^[0-9]{1,5}$ ]] && (( answer >= 1 && answer <= 65535 )); then printf -v "$variable" '%s' "$answer";return;fi
+    if [[ $answer =~ ^[0-9]{1,5}$ ]] && (( 10#$answer >= 1 && 10#$answer <= 65535 )); then printf -v "$variable" '%s' "$((10#$answer))";return;fi
     printf 'Port harus angka antara 1 dan 65535.\n'
   done
 }
-validate_host(){
-  local h=$1
-  [[ -n $h && ${#h} -le 253 && $h != *[!a-zA-Z0-9.:-]* ]] || return 1
-  [[ $h != *..* && $h != .* && $h != *. ]] || return 1
-}
-validate_nat_mapping(){
-  local endpoint=$1 host port
-  [[ $endpoint =~ ^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+):([0-9]{1,5})$ ]] || return 1
-  host=${BASH_REMATCH[1]};port=${BASH_REMATCH[2]}
-  if [[ $host == \[*\] ]]; then host=${host:1:${#host}-2}; fi
-  validate_host "$host" || return 1
-  (( 10#$port >= 1 && 10#$port <= 65535 ))
+ask_port_different(){
+  local label=$1 variable=$2 other_port=$3 selected
+  while :; do
+    ask_port "$label" "$variable"
+    selected=${!variable}
+    if [[ $selected != "$other_port" ]]; then return; fi
+    printf 'Port harus berbeda dari port terkait; masukkan ulang.\n'
+  done
 }
 ask_nat_mappings(){
-  local answer count index endpoint existing first duplicate
+  local answer count index public_port existing duplicate
   while :; do
     answer=
-    if ! read -r -p 'Jumlah mapping NAT Xray (1-8; 1 mapping provider dipakai panel): ' answer; then die 'Jumlah mapping NAT Xray diperlukan.'; fi
-    if [[ -z $answer ]]; then printf 'Jumlah mapping wajib diisi; masukkan angka 1 sampai 8.\n'; continue; fi
+    if ! read -r -p 'Jumlah mapping NAT Xray (1-8; 1 slot dari 9 total dipakai panel): ' answer; then die 'Jumlah mapping NAT Xray diperlukan.'; fi
     if [[ $answer =~ ^[1-8]$ ]]; then count=$answer; break; fi
     printf 'Jumlah mapping Xray harus angka 1 sampai 8; panel memakai 1 slot provider.\n'
   done
   NAT_MAPPING_LIST=()
   for ((index=1; index<=count; index++)); do
     while :; do
-      answer=
-      if ! read -r -p "Mapping NAT Xray #$index host:port: " answer; then die "Mapping NAT Xray #$index diperlukan."; fi
-      if [[ -z $answer ]]; then printf 'Mapping host:port wajib diisi; silakan masukkan ulang.\n'; continue; fi
-      endpoint=$answer
-      if ! validate_nat_mapping "$endpoint"; then printf 'Format mapping NAT tidak valid (gunakan host:port dengan port 1 sampai 65535).\n'; continue; fi
+      ask_port "Port publik Xray #$index" public_port
       duplicate=0
+      if [[ ${PANEL_PUBLIC:-} == "$public_port" ]]; then
+        printf 'Port publik Xray harus berbeda dari port publik panel; masukkan ulang.\n'
+        duplicate=1
+      fi
       for existing in "${NAT_MAPPING_LIST[@]}"; do
-        if [[ ${existing,,} == "${endpoint,,}" ]]; then duplicate=1; break; fi
+        if [[ $existing == "$public_port" ]]; then
+          printf 'Port publik Xray duplikat; masukkan ulang.\n'
+          duplicate=1
+          break
+        fi
       done
-      if (( duplicate )); then printf 'Mapping NAT duplikat; masukkan endpoint yang berbeda.\n'; continue; fi
-      break
+      (( duplicate == 0 )) && break
     done
-    NAT_MAPPING_LIST+=("$endpoint")
+    NAT_MAPPING_LIST+=("$public_port")
   done
   XRAY_NAT_MAPPINGS=$(IFS=,; printf '%s' "${NAT_MAPPING_LIST[*]}")
-  first=${NAT_MAPPING_LIST[0]}
-  XRAY_FIRST_PORT=${first##*:}
-  if [[ $first == \[*\]* ]]; then XRAY_FIRST_HOST=${first%%]*};XRAY_FIRST_HOST=${XRAY_FIRST_HOST#\[}; else XRAY_FIRST_HOST=${first%:*}; fi
+  XRAY_FIRST_HOST=
+  XRAY_FIRST_PORT=${NAT_MAPPING_LIST[0]}
 }
 port_in_use(){
   local port=$1 output
@@ -261,12 +258,12 @@ install_fresh(){
     say 'Update selesai; konfigurasi, pengguna, key dan password dipertahankan.'
     return
   fi
-  say 'Pengaturan awal. Setiap endpoint Xray publik harus dipetakan provider ke port internal Xray yang sama.'
-  say 'Hostname mapping panel diambil dari provider; installer hanya meminta port publik dan internal panel.'
+  say 'Pengaturan awal. Isi semua port secara manual; endpoint Xray diarahkan provider ke port internal Xray yang sama.'
+  say 'Installer tidak meminta hostname. Provider memberi hostname berbeda untuk tiap mapping; isi hostname Xray nanti di Pengaturan.'
   ask_port 'Port publik panel' PANEL_PUBLIC
   ask_port 'Port internal panel' PANEL_INTERNAL
   ask_nat_mappings
-  ask_port 'Port internal Xray' XRAY_INTERNAL
+  ask_port_different 'Port internal Xray' XRAY_INTERNAL "$PANEL_INTERNAL"
   check_new_ports "$PANEL_PUBLIC" "$PANEL_INTERNAL" "$XRAY_NAT_MAPPINGS" "$XRAY_INTERNAL"
   ask_password
   build_app
@@ -286,11 +283,11 @@ install_fresh(){
   [[ -z $TLS_CERT ]] || scheme=https
   say 'Instalasi selesai.'
   printf 'Panel: %s://<hostname-panel-dari-provider>:%s\n' "$scheme" "$PANEL_PUBLIC"
-  printf 'Xray NAT endpoints (masing-masing -> port internal %s/TCP):\n' "$XRAY_INTERNAL"
+  printf 'Port publik Xray (masing-masing -> port internal %s/TCP):\n' "$XRAY_INTERNAL"
   for mapping in "${NAT_MAPPING_LIST[@]}"; do printf '  %s\n' "$mapping"; done
   printf 'Mode awal: VLESS + TCP + REALITY + Vision. UDP diblokir.\n'
   printf 'Port UFW internal yang diizinkan: %s/TCP dan %s/TCP (jika UFW aktif).\n' "$PANEL_INTERNAL" "$XRAY_INTERNAL"
-  printf 'Periksa provider NAT: mapping hostname-panel-dari-provider:%s -> %s/TCP; setiap endpoint Xray di atas -> %s/TCP.\n' "$PANEL_PUBLIC" "$PANEL_INTERNAL" "$XRAY_INTERNAL"
+  printf 'Periksa provider NAT: mapping port panel %s -> %s/TCP; setiap port Xray di atas -> %s/TCP.\n' "$PANEL_PUBLIC" "$PANEL_INTERNAL" "$XRAY_INTERNAL"
   if [[ -z $TLS_CERT ]]; then printf 'PERINGATAN: panel masih HTTP. Gunakan reverse proxy HTTPS atau sertifikat yang cocok dengan hostname panel dari provider.\n'; fi
 }
 update_existing(){

@@ -47,6 +47,7 @@ type appState struct {
 
 var hostnameRE = regexp.MustCompile(`^[A-Za-z0-9.-]{1,253}$`)
 var shortIDRE = regexp.MustCompile(`^[0-9a-f]{2,16}$`)
+var portOnlyRE = regexp.MustCompile(`^[0-9]{1,5}$`)
 var nameRE = regexp.MustCompile(`^[^\x00-\x1f\x7f]{1,64}$`)
 var xhttpPathRE = regexp.MustCompile(`^/[A-Za-z0-9._~/-]{1,127}$`)
 
@@ -82,6 +83,16 @@ func parseNATMapping(endpoint string) (string, int, error) {
 	return host, p, nil
 }
 
+func parseNATMappingOrPort(endpoint string) (string, int, error) {
+	if endpoint == strings.TrimSpace(endpoint) && portOnlyRE.MatchString(endpoint) {
+		p, err := strconv.Atoi(endpoint)
+		if err == nil && validPort(p) {
+			return "", p, nil
+		}
+		return "", 0, errors.New("port mapping NAT harus antara 1 dan 65535")
+	}
+	return parseNATMapping(endpoint)
+}
 func effectiveNATMappings(s Settings) []string {
 	if len(s.NATMappings) > 0 {
 		return s.NATMappings
@@ -102,7 +113,7 @@ func validateSettings(s Settings) error {
 	}
 	seenMappings := make(map[string]bool, len(mappings))
 	for _, mapping := range mappings {
-		host, port, err := parseNATMapping(mapping)
+		host, port, err := parseNATMappingOrPort(mapping)
 		if err != nil {
 			return err
 		}
@@ -176,6 +187,12 @@ func newRealityKeys() (string, string, error) {
 	return enc.EncodeToString(key.Bytes()), enc.EncodeToString(key.PublicKey().Bytes()), nil
 }
 
+func pendingOrCompleteNATMapping(host string, port int) string {
+	if host == "" {
+		return strconv.Itoa(port)
+	}
+	return net.JoinHostPort(host, strconv.Itoa(port))
+}
 func makeDefaultState(host string, panelPublicPort, panelInternalPort, xrayPublicPort, xrayInternalPort int, passwordHash string) (appState, error) {
 	priv, pub, err := newRealityKeys()
 	if err != nil {
@@ -193,7 +210,7 @@ func makeDefaultState(host string, panelPublicPort, panelInternalPort, xrayPubli
 		Schema: 1,
 		Settings: Settings{
 			PublicHost: host, PublicPort: xrayPublicPort, InternalPort: xrayInternalPort,
-			NATMappings: []string{net.JoinHostPort(host, strconv.Itoa(xrayPublicPort))},
+			NATMappings: []string{pendingOrCompleteNATMapping(host, xrayPublicPort)},
 			Mode:        "tcp", SNI: "www.cloudflare.com", Dest: "www.cloudflare.com:443", XHTTPPath: "/" + path,
 		},
 		Users: []User{}, AdminHash: passwordHash,

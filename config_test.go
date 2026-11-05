@@ -101,6 +101,55 @@ func TestNATMappingsLimitAndLegacyCompatibility(t *testing.T) {
 	}
 }
 
+func TestPendingPublicPortsBecomeLinksAfterProviderHostnameIsEntered(t *testing.T) {
+	s := testState(t)
+	s.Settings.PublicHost = ""
+	s.Settings.PublicPort = 20151
+	s.Settings.NATMappings = []string{"20151", "20152"}
+	if err := validateSettings(s.Settings); err != nil {
+		t.Fatalf("numeric pending ports rejected: %v", err)
+	}
+	if links := makeVLESSLinks(s, s.Users[0]); len(links) != 0 {
+		t.Fatalf("pending ports unexpectedly produced links: %+v", links)
+	}
+	if _, err := buildXrayConfig(s); err != nil {
+		t.Fatalf("Xray config rejected before provider hostnames are available: %v", err)
+	}
+
+	s.Settings.NATMappings = []string{"20151", "nat-two.example.net:20152"}
+	if err := validateSettings(s.Settings); err != nil {
+		t.Fatalf("provider hostname entry rejected: %v", err)
+	}
+	links := makeVLESSLinks(s, s.Users[0])
+	if len(links) != 1 || links[0].Address != "nat-two.example.net:20152" || !strings.Contains(links[0].Link, "@nat-two.example.net:20152?") {
+		t.Fatalf("completed endpoint did not generate exactly its link: %+v", links)
+	}
+
+	s.Settings.NATMappings = []string{"20151", "20151"}
+	if err := validateSettings(s.Settings); err == nil {
+		t.Fatal("accepted duplicate pending public ports")
+	}
+	s.Settings.NATMappings = []string{"nat-one.example.net:20151", "nat-two.example.net:20151"}
+	if err := validateSettings(s.Settings); err != nil {
+		t.Fatalf("rejected legacy-compatible distinct hostnames on the same port: %v", err)
+	}
+	s.Settings.NATMappings = []string{"65536"}
+	if err := validateSettings(s.Settings); err == nil {
+		t.Fatal("accepted an out-of-range pending public port")
+	}
+}
+func TestDefaultStateCanWaitForProviderHostname(t *testing.T) {
+	s, err := makeDefaultState("", 20150, 20151, 20152, 443, "bcrypt-hash-placeholder")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Settings.PublicHost != "" || len(s.Settings.NATMappings) != 1 || s.Settings.NATMappings[0] != "20152" {
+		t.Fatalf("default state invented or lost a provider hostname: %+v", s.Settings)
+	}
+	if err := validateSettings(s.Settings); err != nil {
+		t.Fatalf("pending default state is invalid: %v", err)
+	}
+}
 func TestBuildXHTTPConfig(t *testing.T) {
 	s := testState(t)
 	s.Settings.Mode = "xhttp"

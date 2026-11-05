@@ -151,12 +151,12 @@ func main() {
 func initialize(args []string) error {
 	fs := newFlagSet("init")
 	statePath := fs.String("state", defaultStatePath, "state file path")
-	host := fs.String("host", "vectis-nat-1-20151-ybh.vps-eu1.sumopod.my.id", "public hostname/IP")
-	natMappings := fs.String("nat-mappings", "", "comma-separated public NAT endpoints in host:port form (maximum 8; one of 9 total mappings is reserved for the panel)")
-	panelPublic := fs.Int("panel-public-port", 8080, "public panel port")
-	panelInternal := fs.Int("panel-internal-port", 8080, "internal panel port")
-	xrayPublic := fs.Int("xray-public-port", 20151, "public Xray port")
-	xrayInternal := fs.Int("xray-internal-port", 443, "internal Xray port")
+	host := fs.String("host", "", "optional provider hostname/IP; may be left empty until assigned")
+	natMappings := fs.String("nat-mappings", "", "comma-separated public Xray ports or provider host:port endpoints (maximum 8; one of 9 total mappings is reserved for the panel)")
+	panelPublic := fs.Int("panel-public-port", 0, "public panel port")
+	panelInternal := fs.Int("panel-internal-port", 0, "internal panel port")
+	xrayPublic := fs.Int("xray-public-port", 0, "public Xray port")
+	xrayInternal := fs.Int("xray-internal-port", 0, "internal Xray port")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -187,7 +187,7 @@ func initialize(args []string) error {
 	}
 	if *natMappings != "" {
 		st.Settings.NATMappings = strings.Split(*natMappings, ",")
-		firstHost, firstPort, err := parseNATMapping(st.Settings.NATMappings[0])
+		firstHost, firstPort, err := parseNATMappingOrPort(st.Settings.NATMappings[0])
 		if err != nil {
 			return err
 		}
@@ -627,7 +627,7 @@ func (s *server) updateSettings(raw map[string]json.RawMessage) error {
 		in.NATMappings[i] = strings.TrimSpace(in.NATMappings[i])
 	}
 	if len(in.NATMappings) > 0 {
-		host, port, err := parseNATMapping(in.NATMappings[0])
+		host, port, err := parseNATMappingOrPort(in.NATMappings[0])
 		if err != nil {
 			return err
 		}
