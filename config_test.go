@@ -85,15 +85,15 @@ func TestNATMappingsLimitAndLegacyCompatibility(t *testing.T) {
 	if err := validateSettings(s.Settings); err != nil {
 		t.Fatalf("legacy single-endpoint state rejected: %v", err)
 	}
-	for i := 0; i < 9; i++ {
+	for i := 0; i < 8; i++ {
 		s.Settings.NATMappings = append(s.Settings.NATMappings, "nat-"+strconv.Itoa(i)+".example.net:"+strconv.Itoa(20151+i))
 	}
 	if err := validateSettings(s.Settings); err != nil {
-		t.Fatalf("nine mappings rejected: %v", err)
+		t.Fatalf("eight Xray mappings plus one panel mapping rejected: %v", err)
 	}
-	s.Settings.NATMappings = append(s.Settings.NATMappings, "nat-10.example.net:20160")
+	s.Settings.NATMappings = append(s.Settings.NATMappings, "nat-9.example.net:20159")
 	if err := validateSettings(s.Settings); err == nil {
-		t.Fatal("accepted ten NAT mappings")
+		t.Fatal("accepted nine Xray mappings plus the panel mapping (10 total)")
 	}
 	s.Settings.NATMappings = []string{"nat.example.net:20151", "nat.example.net:20151"}
 	if err := validateSettings(s.Settings); err == nil {

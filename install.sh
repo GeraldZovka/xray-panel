@@ -127,10 +127,10 @@ validate_nat_mapping(){
 ask_nat_mappings(){
   local answer count index default endpoint existing first
   while :; do
-    read -r -p 'Jumlah mapping NAT Xray (1-9) [2]: ' answer || true
+    read -r -p 'Jumlah mapping NAT Xray (1-8; 1 mapping provider dipakai panel) [2]: ' answer || true
     count=${answer:-2}
-    if [[ $count =~ ^[1-9]$ ]]; then break; fi
-    printf 'Jumlah mapping harus angka 1 sampai 9.\n'
+    if [[ $count =~ ^[1-8]$ ]]; then break; fi
+    printf 'Jumlah mapping Xray harus angka 1 sampai 8; panel memakai 1 slot provider.\n'
   done
   NAT_MAPPING_LIST=()
   for ((index=1; index<=count; index++)); do

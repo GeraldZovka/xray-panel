@@ -97,8 +97,8 @@ func validateSettings(s Settings) error {
 		return errors.New("port harus antara 1 dan 65535")
 	}
 	mappings := effectiveNATMappings(s)
-	if len(mappings) == 0 || len(mappings) > 9 {
-		return errors.New("jumlah mapping NAT harus antara 1 dan 9")
+	if len(mappings) == 0 || len(mappings) > 8 {
+		return errors.New("mapping NAT Xray harus 1–8 endpoint; satu dari 9 mapping total dicadangkan untuk panel")
 	}
 	seenMappings := make(map[string]bool, len(mappings))
 	for _, mapping := range mappings {

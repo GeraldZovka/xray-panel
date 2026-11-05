@@ -152,7 +152,7 @@ func initialize(args []string) error {
 	fs := newFlagSet("init")
 	statePath := fs.String("state", defaultStatePath, "state file path")
 	host := fs.String("host", "vectis-nat-1-20151-ybh.vps-eu1.sumopod.my.id", "public hostname/IP")
-	natMappings := fs.String("nat-mappings", "", "comma-separated public NAT endpoints in host:port form (maximum 9)")
+	natMappings := fs.String("nat-mappings", "", "comma-separated public NAT endpoints in host:port form (maximum 8; one of 9 total mappings is reserved for the panel)")
 	panelPublic := fs.Int("panel-public-port", 8080, "public panel port")
 	panelInternal := fs.Int("panel-internal-port", 8080, "internal panel port")
 	xrayPublic := fs.Int("xray-public-port", 20151, "public Xray port")
