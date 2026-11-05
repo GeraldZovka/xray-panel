@@ -428,3 +428,83 @@ func TestManagedInboundsRequireDistinctProtocolsPortsAndCombinedMappingLimit(t *
 		t.Fatal("accepted non-UUID VMess credential")
 	}
 }
+
+func TestVLESSVisionAndXHTTPREALITYRunAsSeparateInbounds(t *testing.T) {
+	s := testState(t)
+	s.Settings.InternalPort = 20151
+	inbound, err := newVLESSXHTTPInbound("xhttp-inbound-1", 20152, s.Settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inbound.NATMappings = []string{"xhttp.example.net:20252"}
+	s.Inbounds = []ManagedInbound{inbound}
+	if err := validateManagedInbounds(s); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := buildXrayConfig(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(cfg, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	inbounds := decoded["inbounds"].([]any)
+	if len(inbounds) != 2 {
+		t.Fatalf("generated %d inbounds, want 2", len(inbounds))
+	}
+	primary := inbounds[0].(map[string]any)
+	primaryStream := primary["streamSettings"].(map[string]any)
+	if primary["protocol"] != "vless" || primary["port"].(float64) != 20151 || primaryStream["network"] != "tcp" || primaryStream["security"] != "reality" {
+		t.Fatalf("primary Vision inbound changed: %#v", primary)
+	}
+	primaryUsers := primary["settings"].(map[string]any)["clients"].([]any)
+	if primaryUsers[0].(map[string]any)["flow"] != "xtls-rprx-vision" {
+		t.Fatal("primary Vision flow was not preserved")
+	}
+	second := inbounds[1].(map[string]any)
+	secondStream := second["streamSettings"].(map[string]any)
+	if second["protocol"] != "vless" || second["port"].(float64) != 20152 || secondStream["network"] != "xhttp" || secondStream["security"] != "reality" {
+		t.Fatalf("XHTTP inbound not generated independently: %#v", second)
+	}
+	secondUsers := second["settings"].(map[string]any)["clients"].([]any)
+	if secondUsers[0].(map[string]any)["id"] != s.Users[0].UUID {
+		t.Fatal("XHTTP inbound did not preserve the user's existing UUID")
+	}
+	if inbound.RealityPrivateKey == s.RealityPrivateKey || inbound.RealityPublicKey == s.RealityPublicKey || inbound.RealityShortID == s.RealityShortID {
+		t.Fatal("XHTTP inbound reused the primary REALITY material")
+	}
+	links := makeUserLinks(s, s.Users[0])
+	if len(links) != 2 || links[1].Address != "xhttp.example.net:20252" || links[1].InboundID != inbound.ID {
+		t.Fatalf("completed XHTTP link missing for the provider endpoint")
+	}
+	if !strings.HasPrefix(links[1].Link, "vless://"+s.Users[0].UUID+"@xhttp.example.net:20252?") || !strings.Contains(links[1].Link, "type=xhttp") || !strings.Contains(links[1].Link, "security=reality") || strings.Contains(links[1].Link, inbound.RealityPrivateKey) {
+		t.Fatal("generated XHTTP client link is malformed or exposes a private key")
+	}
+}
+
+func TestVLESSXHTTPInboundRequiresDistinctPortAndSafePath(t *testing.T) {
+	s := testState(t)
+	inbound, err := newVLESSXHTTPInbound("xhttp-inbound-1", s.Settings.InternalPort+1, s.Settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Inbounds = []ManagedInbound{inbound}
+	if err := validateManagedInbounds(s); err != nil {
+		t.Fatal(err)
+	}
+	s.Inbounds[0].InternalPort = s.Settings.InternalPort
+	if validateManagedInbounds(s) == nil {
+		t.Fatal("accepted duplicate primary and XHTTP listener ports")
+	}
+	s.Inbounds[0] = inbound
+	s.Inbounds[0].XHTTPPath = "/x?unsafe=1"
+	if validateManagedInbounds(s) == nil {
+		t.Fatal("accepted an unsafe XHTTP path")
+	}
+	s.Inbounds[0] = inbound
+	s.Inbounds[0].Mode = "tcp"
+	if validateManagedInbounds(s) == nil {
+		t.Fatal("accepted a non-XHTTP additional VLESS inbound")
+	}
+}

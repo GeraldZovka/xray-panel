@@ -40,14 +40,19 @@ type User struct {
 	CreatedAt           time.Time         `json:"createdAt"`
 }
 
-// ManagedInbound is an additional, independently addressed protocol listener.
-// Only protocols with panel-generated per-user credentials and share links are
-// admitted here; advanced single-inbound protocol JSON remains in Settings.
+// ManagedInbound is an additional, independently configured Xray listener.
 type ManagedInbound struct {
-	ID           string   `json:"id"`
-	Protocol     string   `json:"protocol"`
-	InternalPort int      `json:"internalPort"`
-	NATMappings  []string `json:"natMappings,omitempty"`
+	ID                string   `json:"id"`
+	Protocol          string   `json:"protocol"`
+	InternalPort      int      `json:"internalPort"`
+	Mode              string   `json:"mode,omitempty"`
+	NATMappings       []string `json:"natMappings,omitempty"`
+	SNI               string   `json:"sni,omitempty"`
+	Dest              string   `json:"dest,omitempty"`
+	XHTTPPath         string   `json:"xhttpPath,omitempty"`
+	RealityPrivateKey string   `json:"realityPrivateKey,omitempty"`
+	RealityPublicKey  string   `json:"realityPublicKey,omitempty"`
+	RealityShortID    string   `json:"realityShortId,omitempty"`
 }
 
 type appState struct {
@@ -70,7 +75,7 @@ var inboundIDRE = regexp.MustCompile(`^[A-Za-z0-9_-]{6,64}$`)
 var credentialRE = regexp.MustCompile(`^[0-9a-f-]{32,128}$`)
 
 var supportedInboundProtocols = []string{"tunnel", "http", "shadowsocks", "socks", "trojan", "vless", "vmess", "wireguard", "hysteria", "masque", "tun"}
-var managedInboundProtocols = []string{"vmess", "shadowsocks"}
+var managedInboundProtocols = []string{"vless", "vmess", "shadowsocks"}
 
 func effectiveInboundProtocol(s Settings) string {
 	if s.Protocol == "" {
@@ -225,6 +230,7 @@ func validateManagedInbounds(st appState) error {
 	seenIDs := map[string]bool{}
 	seenProtocols := map[string]bool{effectiveInboundProtocol(st.Settings): true}
 	seenPorts := map[int]bool{st.Settings.InternalPort: true}
+	seenSecondaryVLESS := false
 	if addr := os.Getenv("PANEL_ADDR"); addr != "" {
 		if _, rawPort, err := net.SplitHostPort(addr); err == nil {
 			if panelPort, err := strconv.Atoi(rawPort); err == nil && validPort(panelPort) {
@@ -251,14 +257,35 @@ func validateManagedInbounds(st appState) error {
 		if !contains(managedInboundProtocols, in.Protocol) {
 			return fmt.Errorf("protokol tambahan %q belum didukung untuk pembuatan credential/link", in.Protocol)
 		}
-		if seenProtocols[in.Protocol] {
-			return errors.New("setiap inbound aktif harus memakai protokol yang berbeda")
+		if in.Protocol == "vless" {
+			if seenSecondaryVLESS {
+				return errors.New("hanya satu inbound VLESS XHTTP tambahan yang didukung")
+			}
+			seenSecondaryVLESS = true
+		} else {
+			if seenProtocols[in.Protocol] {
+				return errors.New("inbound legacy dengan protokol sama sudah tersedia")
+			}
+			seenProtocols[in.Protocol] = true
 		}
-		seenProtocols[in.Protocol] = true
 		if !validPort(in.InternalPort) || seenPorts[in.InternalPort] {
 			return fmt.Errorf("port internal inbound %s tidak valid atau bertabrakan", in.Protocol)
 		}
 		seenPorts[in.InternalPort] = true
+		if in.Protocol == "vless" {
+			if in.Mode != "xhttp" {
+				return errors.New("inbound VLESS tambahan harus memakai transport XHTTP")
+			}
+			if in.SNI == "" || in.Dest == "" || in.XHTTPPath == "" || in.RealityPrivateKey == "" || in.RealityPublicKey == "" || !shortIDRE.MatchString(in.RealityShortID) {
+				return errors.New("pengaturan XHTTP+REALITY pada inbound tambahan belum lengkap")
+			}
+			if err := validateRealityTarget(in.SNI, in.Dest); err != nil {
+				return err
+			}
+			if !xhttpPathRE.MatchString(in.XHTTPPath) {
+				return errors.New("path XHTTP harus diawali / dan hanya memakai karakter aman")
+			}
+		}
 		for _, mapping := range in.NATMappings {
 			if err := addValidatedMapping(seenMappings, mapping); err != nil {
 				return err
@@ -271,6 +298,12 @@ func validateManagedInbounds(st appState) error {
 	}
 	for _, user := range st.Users {
 		for _, in := range st.Inbounds {
+			if in.Protocol == "vless" {
+				if _, err := parseUUID(user.UUID); err != nil {
+					return fmt.Errorf("UUID VLESS pengguna %q tidak valid", user.Name)
+				}
+				continue
+			}
 			credential := user.ProtocolCredentials[in.ID]
 			if !credentialRE.MatchString(credential) {
 				return fmt.Errorf("credential %s pengguna %q tidak valid", in.Protocol, user.Name)
@@ -344,6 +377,25 @@ func newRealityKeys() (string, string, error) {
 	}
 	enc := base64.RawURLEncoding
 	return enc.EncodeToString(key.Bytes()), enc.EncodeToString(key.PublicKey().Bytes()), nil
+}
+
+func newVLESSXHTTPInbound(id string, port int, defaults Settings) (ManagedInbound, error) {
+	privateKey, publicKey, err := newRealityKeys()
+	if err != nil {
+		return ManagedInbound{}, err
+	}
+	shortID, err := randomHex(8)
+	if err != nil {
+		return ManagedInbound{}, err
+	}
+	path, err := randomHex(16)
+	if err != nil {
+		return ManagedInbound{}, err
+	}
+	return ManagedInbound{
+		ID: id, Protocol: "vless", InternalPort: port, Mode: "xhttp", SNI: defaults.SNI, Dest: defaults.Dest,
+		XHTTPPath: "/" + path, RealityPrivateKey: privateKey, RealityPublicKey: publicKey, RealityShortID: shortID,
+	}, nil
 }
 
 func makeDefaultState(panelInternalPort, xrayInternalPort int, passwordHash string) (appState, error) {
@@ -475,6 +527,27 @@ func buildPrimaryInbound(s appState) (map[string]any, error) {
 }
 
 func buildManagedInbound(in ManagedInbound, users []User) (map[string]any, error) {
+	if in.Protocol == "vless" {
+		clients := make([]map[string]string, 0, len(users))
+		for _, user := range users {
+			if !user.Enabled {
+				continue
+			}
+			if _, err := parseUUID(user.UUID); err != nil {
+				return nil, fmt.Errorf("UUID user %q tidak valid", user.Name)
+			}
+			clients = append(clients, map[string]string{"id": user.UUID})
+		}
+		return map[string]any{
+			"tag": "managed-" + in.ID, "listen": "0.0.0.0", "port": in.InternalPort, "protocol": "vless",
+			"settings": map[string]any{"clients": clients, "decryption": "none"},
+			"streamSettings": map[string]any{
+				"network": "xhttp", "security": "reality",
+				"xhttpSettings":   map[string]any{"path": in.XHTTPPath},
+				"realitySettings": map[string]any{"show": false, "target": in.Dest, "serverNames": []string{in.SNI}, "privateKey": in.RealityPrivateKey, "shortIds": []string{in.RealityShortID}},
+			},
+		}, nil
+	}
 	clients := make([]map[string]any, 0, len(users))
 	for _, user := range users {
 		if !user.Enabled {
@@ -561,6 +634,12 @@ func makeManagedLink(in ManagedInbound, user User, host string, port int) (strin
 	credential := user.ProtocolCredentials[in.ID]
 	address := net.JoinHostPort(host, strconv.Itoa(port))
 	switch in.Protocol {
+	case "vless":
+		if _, err := parseUUID(user.UUID); err != nil {
+			return "", err
+		}
+		params := url.Values{"encryption": {"none"}, "security": {"reality"}, "sni": {in.SNI}, "fp": {"chrome"}, "pbk": {in.RealityPublicKey}, "sid": {in.RealityShortID}, "type": {"xhttp"}, "path": {in.XHTTPPath}, "mode": {"auto"}}
+		return "vless://" + user.UUID + "@" + address + "?" + params.Encode() + "#" + url.QueryEscape(user.Name), nil
 	case "vmess":
 		if _, err := parseUUID(credential); err != nil {
 			return "", err
@@ -594,6 +673,24 @@ func makeVLESSLinkForEndpoint(s appState, u User, host string, port int) string 
 		params.Set("mode", "auto")
 	}
 	return "vless://" + u.UUID + "@" + net.JoinHostPort(host, strconv.Itoa(port)) + "?" + params.Encode() + "#" + url.QueryEscape(u.Name)
+}
+
+func validateRealityTarget(sni, dest string) error {
+	if !hostnameRE.MatchString(sni) || len(sni) > 253 || strings.Contains(sni, "..") || strings.ContainsAny(sni, "/:@?#\\ \t\r\n") {
+		return errors.New("SNI tidak valid")
+	}
+	host, port, err := net.SplitHostPort(dest)
+	if err != nil || host == "" {
+		return errors.New("dest harus berupa hostname:port atau IP:port")
+	}
+	if net.ParseIP(host) == nil && (!hostnameRE.MatchString(host) || strings.Contains(host, "..")) {
+		return errors.New("hostname dest tidak valid")
+	}
+	p, err := strconv.Atoi(port)
+	if err != nil || !validPort(p) {
+		return errors.New("port dest tidak valid")
+	}
+	return nil
 }
 
 func parseUUID(s string) ([]byte, error) {

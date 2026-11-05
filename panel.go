@@ -64,19 +64,29 @@ type publicUser struct {
 	Link      string       `json:"link"`
 	Links     []publicLink `json:"links"`
 }
+type publicInbound struct {
+	ID           string   `json:"id"`
+	Protocol     string   `json:"protocol"`
+	InternalPort int      `json:"internalPort"`
+	Mode         string   `json:"mode"`
+	NATMappings  []string `json:"natMappings"`
+	SNI          string   `json:"sni"`
+	Dest         string   `json:"dest"`
+	XHTTPPath    string   `json:"xhttpPath"`
+}
 type publicState struct {
-	CSRF     string           `json:"csrf"`
-	Settings Settings         `json:"settings"`
-	Inbounds []ManagedInbound `json:"inbounds"`
-	Users    []publicUser     `json:"users"`
-	Running  bool             `json:"running"`
-	Version  string           `json:"version"`
-	Uptime   string           `json:"uptime"`
-	CPU      string           `json:"cpu"`
-	Load     string           `json:"load"`
-	RAM      string           `json:"ram"`
-	Logs     string           `json:"logs"`
-	HTTPS    bool             `json:"https"`
+	CSRF     string          `json:"csrf"`
+	Settings Settings        `json:"settings"`
+	Inbounds []publicInbound `json:"inbounds"`
+	Users    []publicUser    `json:"users"`
+	Running  bool            `json:"running"`
+	Version  string          `json:"version"`
+	Uptime   string          `json:"uptime"`
+	CPU      string          `json:"cpu"`
+	Load     string          `json:"load"`
+	RAM      string          `json:"ram"`
+	Logs     string          `json:"logs"`
+	HTTPS    bool            `json:"https"`
 }
 type helperRequest struct {
 	Action    string `json:"action"`
@@ -180,10 +190,10 @@ func applyStoredState() error {
 	}
 	resp, err := callHelper(helperRequest{Action: "apply", Config: string(cfg)})
 	if err != nil {
-		return errors.New(redact(err.Error(), st.RealityPrivateKey))
+		return errors.New(redactState(err.Error(), st))
 	}
 	if !resp.OK {
-		return errors.New(redact(resp.Error, st.RealityPrivateKey))
+		return errors.New(redactState(resp.Error, st))
 	}
 	return nil
 }
@@ -384,9 +394,9 @@ func (s *server) handleState(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		resp = helperResponse{OK: false, Error: "helper layanan tidak tersedia"}
 	}
-	logs := redact(resp.Logs, st.RealityPrivateKey)
+	logs := redactState(resp.Logs, st)
 	if !resp.OK && logs == "" {
-		logs = redact(resp.Error, st.RealityPrivateKey)
+		logs = redactState(resp.Error, st)
 	}
 	users := make([]publicUser, 0, len(st.Users))
 	for _, u := range st.Users {
@@ -397,7 +407,11 @@ func (s *server) handleState(w http.ResponseWriter, r *http.Request) {
 		}
 		users = append(users, publicUser{ID: u.ID, Name: u.Name, Enabled: u.Enabled, CreatedAt: u.CreatedAt, Link: primary, Links: links})
 	}
-	out := publicState{CSRF: csrf, Settings: st.Settings, Inbounds: st.Inbounds, Users: users, Running: resp.Status == "active", Version: resp.Version, Uptime: resp.Uptime, CPU: resp.CPU, Load: resp.Load, RAM: resp.RAM, Logs: logs, HTTPS: isHTTPS(r)}
+	inbounds := make([]publicInbound, 0, len(st.Inbounds))
+	for _, in := range st.Inbounds {
+		inbounds = append(inbounds, publicInbound{ID: in.ID, Protocol: in.Protocol, InternalPort: in.InternalPort, Mode: in.Mode, NATMappings: in.NATMappings, SNI: in.SNI, Dest: in.Dest, XHTTPPath: in.XHTTPPath})
+	}
+	out := publicState{CSRF: csrf, Settings: st.Settings, Inbounds: inbounds, Users: users, Running: resp.Status == "active", Version: resp.Version, Uptime: resp.Uptime, CPU: resp.CPU, Load: resp.Load, RAM: resp.RAM, Logs: logs, HTTPS: isHTTPS(r)}
 	writeJSON(w, http.StatusOK, out)
 }
 func (s *server) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -622,6 +636,9 @@ func (s *server) addUser(raw map[string]json.RawMessage) (any, error) {
 			}
 		}
 		for _, inbound := range st.Inbounds {
+			if inbound.Protocol == "vless" {
+				continue
+			}
 			credential, err := newProtocolCredential(inbound.Protocol)
 			if err != nil {
 				return err
@@ -692,8 +709,8 @@ func parseAddInboundRequest(raw map[string]json.RawMessage) (string, int, error)
 		Protocol     string `json:"protocol"`
 		InternalPort int    `json:"internalPort"`
 	}
-	if err := json.Unmarshal(raw["protocol"], &in.Protocol); err != nil || !contains(managedInboundProtocols, in.Protocol) {
-		return "", 0, errors.New("pilih protokol tambahan VMess atau Shadowsocks")
+	if err := json.Unmarshal(raw["protocol"], &in.Protocol); err != nil || in.Protocol != "vless" {
+		return "", 0, errors.New("inbound tambahan yang didukung adalah VLESS + XHTTP + REALITY")
 	}
 	if err := json.Unmarshal(raw["internalPort"], &in.InternalPort); err != nil {
 		return "", 0, errors.New("port internal harus angka antara 1 dan 65535")
@@ -714,16 +731,19 @@ func (s *server) addInbound(raw map[string]json.RawMessage) (any, error) {
 		return nil, err
 	}
 	err = s.transact(func(st *appState) error {
-		if len(st.Inbounds) >= 8 {
-			return errors.New("maksimal 8 inbound tambahan dikelola panel")
-		}
 		for _, current := range st.Inbounds {
-			if current.Protocol == protocol {
-				return errors.New("inbound aktif sudah memakai protokol itu")
+			if current.Protocol == "vless" {
+				return errors.New("inbound VLESS + XHTTP + REALITY sudah tersedia")
 			}
 		}
-		managed := ManagedInbound{ID: id, Protocol: protocol, InternalPort: internalPort}
+		managed, err := newVLESSXHTTPInbound(id, internalPort, st.Settings)
+		if err != nil {
+			return err
+		}
 		for i := range st.Users {
+			if protocol == "vless" {
+				continue
+			}
 			credential, err := newProtocolCredential(protocol)
 			if err != nil {
 				return err
@@ -831,17 +851,14 @@ func (s *server) serviceAction(raw map[string]json.RawMessage) (any, error) {
 }
 func (s *server) updateXray() (any, error) {
 	resp, err := callHelper(helperRequest{Action: "update"})
+	s.mu.Lock()
+	st := s.state
+	s.mu.Unlock()
 	if err != nil {
-		s.mu.Lock()
-		private := s.state.RealityPrivateKey
-		s.mu.Unlock()
-		return nil, errors.New(redact(err.Error(), private))
+		return nil, errors.New(redactState(err.Error(), st))
 	}
 	if !resp.OK {
-		s.mu.Lock()
-		private := s.state.RealityPrivateKey
-		s.mu.Unlock()
-		return nil, errors.New(redact(resp.Error, private))
+		return nil, errors.New(redactState(resp.Error, st))
 	}
 	return map[string]bool{"ok": true}, nil
 }
@@ -878,10 +895,10 @@ func (s *server) transact(change func(*appState) error) error {
 	}
 	resp, err := callHelper(helperRequest{Action: "apply", Config: string(cfg)})
 	if err != nil {
-		return errors.New(redact(err.Error(), next.RealityPrivateKey))
+		return errors.New(redactState(err.Error(), next))
 	}
 	if !resp.OK {
-		return fmt.Errorf("Xray menolak perubahan; konfigurasi lama dipulihkan: %s", redact(resp.Error, next.RealityPrivateKey))
+		return fmt.Errorf("Xray menolak perubahan; konfigurasi lama dipulihkan: %s", redactState(resp.Error, next))
 	}
 	if err := saveState(s.statePath, next); err != nil {
 		oldCfg, _ := buildXrayConfig(old)
@@ -1023,6 +1040,13 @@ func callHelper(req helperRequest) (helperResponse, error) {
 func redact(text, private string) string {
 	if private != "" {
 		text = strings.ReplaceAll(text, private, "[disembunyikan]")
+	}
+	return text
+}
+func redactState(text string, st appState) string {
+	text = redact(text, st.RealityPrivateKey)
+	for _, inbound := range st.Inbounds {
+		text = redact(text, inbound.RealityPrivateKey)
 	}
 	return text
 }

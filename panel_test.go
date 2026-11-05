@@ -9,21 +9,21 @@ import (
 
 func TestParseAddInboundRequestDecodesAndValidatesPort(t *testing.T) {
 	valid := map[string]json.RawMessage{
-		"protocol":     json.RawMessage(`"vmess"`),
+		"protocol":     json.RawMessage(`"vless"`),
 		"internalPort": json.RawMessage(`20152`),
 	}
 	protocol, port, err := parseAddInboundRequest(valid)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if protocol != "vmess" || port != 20152 {
-		t.Fatalf("parsed protocol/port = %q/%d, want vmess/20152", protocol, port)
+	if protocol != "vless" || port != 20152 {
+		t.Fatalf("parsed protocol/port = %q/%d, want vless/20152", protocol, port)
 	}
 	for _, invalid := range []map[string]json.RawMessage{
-		{"protocol": json.RawMessage(`"vmess"`)},
-		{"protocol": json.RawMessage(`"vmess"`), "internalPort": json.RawMessage(`0`)},
-		{"protocol": json.RawMessage(`"vmess"`), "internalPort": json.RawMessage(`65536`)},
-		{"protocol": json.RawMessage(`"vless"`), "internalPort": json.RawMessage(`20152`)},
+		{"protocol": json.RawMessage(`"vless"`)},
+		{"protocol": json.RawMessage(`"vless"`), "internalPort": json.RawMessage(`0`)},
+		{"protocol": json.RawMessage(`"vless"`), "internalPort": json.RawMessage(`65536`)},
+		{"protocol": json.RawMessage(`"vmess"`), "internalPort": json.RawMessage(`20152`)},
 	} {
 		if _, _, err := parseAddInboundRequest(invalid); err == nil {
 			t.Fatalf("accepted invalid inbound request: %#v", invalid)
@@ -82,5 +82,18 @@ func TestAdminPasswordLengthPolicy(t *testing.T) {
 	}
 	if validAdminPasswordLength(make([]byte, 1025)) {
 		t.Fatal("accepted a password longer than 1024 bytes")
+	}
+}
+
+func TestRedactStateCoversSecondaryRealityPrivateKey(t *testing.T) {
+	s := testState(t)
+	inbound, err := newVLESSXHTTPInbound("xhttp-inbound-1", s.Settings.InternalPort+1, s.Settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Inbounds = []ManagedInbound{inbound}
+	text := redactState("bad private="+inbound.RealityPrivateKey, s)
+	if text == "" || text == "bad private="+inbound.RealityPrivateKey {
+		t.Fatal("secondary REALITY private key was not redacted")
 	}
 }
