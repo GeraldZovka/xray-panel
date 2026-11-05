@@ -108,8 +108,8 @@ func validateSettings(s Settings) error {
 		return errors.New("port harus antara 1 dan 65535")
 	}
 	mappings := effectiveNATMappings(s)
-	if len(mappings) == 0 || len(mappings) > 8 {
-		return errors.New("mapping NAT Xray harus 1–8 endpoint; satu dari 9 mapping total dicadangkan untuk panel")
+	if len(mappings) > 8 {
+		return errors.New("mapping NAT Xray maksimal 8 endpoint; satu dari 9 mapping total dicadangkan untuk panel")
 	}
 	seenMappings := make(map[string]bool, len(mappings))
 	for _, mapping := range mappings {
@@ -123,13 +123,8 @@ func validateSettings(s Settings) error {
 		}
 		seenMappings[key] = true
 	}
-	if len(s.NATMappings) == 0 {
-		if err := validateHostname(s.PublicHost); err != nil {
-			return err
-		}
-		if !validPort(s.PublicPort) {
-			return errors.New("port harus antara 1 dan 65535")
-		}
+	if len(mappings) == 0 && (s.PublicHost != "" || s.PublicPort != 0) {
+		return errors.New("endpoint publik Xray harus diisi lengkap atau dibiarkan kosong")
 	}
 	if s.Mode != "tcp" && s.Mode != "xhttp" {
 		return errors.New("mode harus tcp atau xhttp")
@@ -187,13 +182,7 @@ func newRealityKeys() (string, string, error) {
 	return enc.EncodeToString(key.Bytes()), enc.EncodeToString(key.PublicKey().Bytes()), nil
 }
 
-func pendingOrCompleteNATMapping(host string, port int) string {
-	if host == "" {
-		return strconv.Itoa(port)
-	}
-	return net.JoinHostPort(host, strconv.Itoa(port))
-}
-func makeDefaultState(host string, panelPublicPort, panelInternalPort, xrayPublicPort, xrayInternalPort int, passwordHash string) (appState, error) {
+func makeDefaultState(panelPublicPort, panelInternalPort, xrayInternalPort int, passwordHash string) (appState, error) {
 	priv, pub, err := newRealityKeys()
 	if err != nil {
 		return appState{}, err
@@ -209,15 +198,17 @@ func makeDefaultState(host string, panelPublicPort, panelInternalPort, xrayPubli
 	s := appState{
 		Schema: 1,
 		Settings: Settings{
-			PublicHost: host, PublicPort: xrayPublicPort, InternalPort: xrayInternalPort,
-			NATMappings: []string{pendingOrCompleteNATMapping(host, xrayPublicPort)},
-			Mode:        "tcp", SNI: "www.cloudflare.com", Dest: "www.cloudflare.com:443", XHTTPPath: "/" + path,
+			InternalPort: xrayInternalPort,
+			Mode:         "tcp", SNI: "www.cloudflare.com", Dest: "www.cloudflare.com:443", XHTTPPath: "/" + path,
 		},
 		Users: []User{}, AdminHash: passwordHash,
 		RealityPrivateKey: priv, RealityPublicKey: pub, RealityShortID: shortID,
 	}
 	if !validPort(panelPublicPort) || !validPort(panelInternalPort) {
 		return appState{}, errors.New("port panel tidak valid")
+	}
+	if panelInternalPort == xrayInternalPort {
+		return appState{}, errors.New("port internal panel dan Xray harus berbeda")
 	}
 	if err := validateSettings(s.Settings); err != nil {
 		return appState{}, err

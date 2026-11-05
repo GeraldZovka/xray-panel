@@ -9,10 +9,13 @@ import (
 
 func testState(t *testing.T) appState {
 	t.Helper()
-	s, err := makeDefaultState("proxy.example.net", 8080, 8080, 20151, 443, "bcrypt-hash-placeholder")
+	s, err := makeDefaultState(8080, 8080, 443, "bcrypt-hash-placeholder")
 	if err != nil {
 		t.Fatal(err)
 	}
+	s.Settings.PublicHost = "proxy.example.net"
+	s.Settings.PublicPort = 20151
+	s.Settings.NATMappings = []string{"proxy.example.net:20151"}
 	uuid, err := newUUID()
 	if err != nil {
 		t.Fatal(err)
@@ -137,17 +140,34 @@ func TestPendingPublicPortsBecomeLinksAfterProviderHostnameIsEntered(t *testing.
 	if err := validateSettings(s.Settings); err == nil {
 		t.Fatal("accepted an out-of-range pending public port")
 	}
+	s.Settings.InternalPort = 20151
+	s.Settings.NATMappings = []string{"nat-one.example.net:20151"}
+	if err := validateSettings(s.Settings); err != nil {
+		t.Fatalf("provider public port matching the internal port was rejected: %v", err)
+	}
 }
-func TestDefaultStateCanWaitForProviderHostname(t *testing.T) {
-	s, err := makeDefaultState("", 20150, 20151, 20152, 443, "bcrypt-hash-placeholder")
+func TestDefaultStateCanWaitForProviderEndpoint(t *testing.T) {
+	s, err := makeDefaultState(20150, 20151, 443, "bcrypt-hash-placeholder")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.Settings.PublicHost != "" || len(s.Settings.NATMappings) != 1 || s.Settings.NATMappings[0] != "20152" {
-		t.Fatalf("default state invented or lost a provider hostname: %+v", s.Settings)
+	if s.Settings.PublicHost != "" || s.Settings.PublicPort != 0 || len(s.Settings.NATMappings) != 0 {
+		t.Fatalf("default state invented a provider endpoint: %+v", s.Settings)
 	}
 	if err := validateSettings(s.Settings); err != nil {
-		t.Fatalf("pending default state is invalid: %v", err)
+		t.Fatalf("empty-endpoint default state is invalid: %v", err)
+	}
+	if _, err := buildXrayConfig(s); err != nil {
+		t.Fatalf("Xray config rejected before provider endpoint is available: %v", err)
+	}
+	s.Settings.NATMappings = []string{"provider.example.net:20152"}
+	if err := validateSettings(s.Settings); err != nil {
+		t.Fatalf("provider endpoint entered later in panel settings was rejected: %v", err)
+	}
+}
+func TestDefaultStateRejectsCollidingInternalListeners(t *testing.T) {
+	if _, err := makeDefaultState(8080, 443, 443, "bcrypt-hash-placeholder"); err == nil {
+		t.Fatal("accepted identical panel and Xray internal listener ports")
 	}
 }
 func TestBuildXHTTPConfig(t *testing.T) {

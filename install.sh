@@ -115,49 +115,13 @@ ask_port_different(){
     printf 'Port harus berbeda dari port terkait; masukkan ulang.\n'
   done
 }
-ask_nat_mappings(){
-  local answer count index public_port existing duplicate
-  while :; do
-    answer=
-    if ! read -r -p 'Jumlah mapping NAT Xray (1-8; 1 slot dari 9 total dipakai panel): ' answer; then die 'Jumlah mapping NAT Xray diperlukan.'; fi
-    if [[ $answer =~ ^[1-8]$ ]]; then count=$answer; break; fi
-    printf 'Jumlah mapping Xray harus angka 1 sampai 8; panel memakai 1 slot provider.\n'
-  done
-  NAT_MAPPING_LIST=()
-  for ((index=1; index<=count; index++)); do
-    while :; do
-      ask_port "Port publik Xray #$index" public_port
-      duplicate=0
-      if [[ ${PANEL_PUBLIC:-} == "$public_port" ]]; then
-        printf 'Port publik Xray harus berbeda dari port publik panel; masukkan ulang.\n'
-        duplicate=1
-      fi
-      for existing in "${NAT_MAPPING_LIST[@]}"; do
-        if [[ $existing == "$public_port" ]]; then
-          printf 'Port publik Xray duplikat; masukkan ulang.\n'
-          duplicate=1
-          break
-        fi
-      done
-      (( duplicate == 0 )) && break
-    done
-    NAT_MAPPING_LIST+=("$public_port")
-  done
-  XRAY_NAT_MAPPINGS=$(IFS=,; printf '%s' "${NAT_MAPPING_LIST[*]}")
-  XRAY_FIRST_HOST=
-  XRAY_FIRST_PORT=${NAT_MAPPING_LIST[0]}
-}
 port_in_use(){
   local port=$1 output
   output=$(ss -H -ltn "sport = :$port" 2>/dev/null || true)
   [[ -n $output ]]
 }
 check_new_ports(){
-  local panel_public=$1 panel_internal=$2 xray_mappings=$3 xray_internal=$4 mapping public_port
-  for mapping in ${xray_mappings//,/ }; do
-    public_port=${mapping##*:}
-    [[ $panel_public != "$public_port" ]] || die 'Port publik panel dan Xray harus berbeda pada provider NAT.'
-  done
+  local panel_internal=$1 xray_internal=$2
   [[ $panel_internal != "$xray_internal" ]] || die 'Port internal panel dan Xray harus berbeda.'
   for p in "$panel_internal" "$xray_internal"; do
     if port_in_use "$p"; then
@@ -166,6 +130,12 @@ check_new_ports(){
       die 'Pilih port internal yang tidak sedang listen; instalasi dihentikan tanpa menimpa service itu.'
     fi
   done
+}
+ask_install_ports(){
+  ask_port 'Port publik panel' PANEL_PUBLIC
+  ask_port 'Port internal panel' PANEL_INTERNAL
+  ask_port_different 'Port internal Xray' XRAY_INTERNAL "$PANEL_INTERNAL"
+  check_new_ports "$PANEL_INTERNAL" "$XRAY_INTERNAL"
 }
 ask_password(){
   local p1 p2
@@ -258,13 +228,8 @@ install_fresh(){
     say 'Update selesai; konfigurasi, pengguna, key dan password dipertahankan.'
     return
   fi
-  say 'Pengaturan awal. Isi semua port secara manual; endpoint Xray diarahkan provider ke port internal Xray yang sama.'
-  say 'Installer tidak meminta hostname. Provider memberi hostname berbeda untuk tiap mapping; isi hostname Xray nanti di Pengaturan.'
-  ask_port 'Port publik panel' PANEL_PUBLIC
-  ask_port 'Port internal panel' PANEL_INTERNAL
-  ask_nat_mappings
-  ask_port_different 'Port internal Xray' XRAY_INTERNAL "$PANEL_INTERNAL"
-  check_new_ports "$PANEL_PUBLIC" "$PANEL_INTERNAL" "$XRAY_NAT_MAPPINGS" "$XRAY_INTERNAL"
+  say 'Pengaturan awal. Masukkan port manual; hostname dan port publik endpoint Xray diisi nanti di Pengaturan panel.'
+  ask_install_ports
   ask_password
   build_app
   ensure_xray
@@ -273,7 +238,7 @@ install_fresh(){
   write_service_config
   ask_tls
   if [[ -n $TLS_CERT ]]; then write_service_config; fi
-  printf '%s' "$ADMIN_PASSWORD" | /usr/local/bin/xray-panel init --state "$STATE_FILE" --host "$XRAY_FIRST_HOST" --panel-public-port "$PANEL_PUBLIC" --panel-internal-port "$PANEL_INTERNAL" --xray-public-port "$XRAY_FIRST_PORT" --xray-internal-port "$XRAY_INTERNAL" --nat-mappings "$XRAY_NAT_MAPPINGS"
+  printf '%s' "$ADMIN_PASSWORD" | /usr/local/bin/xray-panel init --state "$STATE_FILE" --panel-public-port "$PANEL_PUBLIC" --panel-internal-port "$PANEL_INTERNAL" --xray-internal-port "$XRAY_INTERNAL"
   chown "$PANEL_USER":"$PANEL_USER" "$STATE_FILE"
   chmod 0600 "$STATE_FILE"
   if [[ -n $GENERATED_PASSWORD ]]; then printf '\nPASSWORD ADMIN (simpan sekarang; tidak akan ditampilkan lagi):\n%s\n\n' "$GENERATED_PASSWORD"; fi
@@ -283,11 +248,12 @@ install_fresh(){
   [[ -z $TLS_CERT ]] || scheme=https
   say 'Instalasi selesai.'
   printf 'Panel: %s://<hostname-panel-dari-provider>:%s\n' "$scheme" "$PANEL_PUBLIC"
-  printf 'Port publik Xray (masing-masing -> port internal %s/TCP):\n' "$XRAY_INTERNAL"
-  for mapping in "${NAT_MAPPING_LIST[@]}"; do printf '  %s\n' "$mapping"; done
+  printf 'Mapping panel provider: <hostname-panel-dari-provider>:%s -> %s/TCP.\n' "$PANEL_PUBLIC" "$PANEL_INTERNAL"
+  printf 'Port internal Xray: %s/TCP; masukkan hostname:port publik Xray di Pengaturan panel setelah provider memberikannya.\n' "$XRAY_INTERNAL"
+  printf 'Batas provider: 1 mapping panel + maksimal 8 endpoint Xray (9 total).\n'
   printf 'Mode awal: VLESS + TCP + REALITY + Vision. UDP diblokir.\n'
   printf 'Port UFW internal yang diizinkan: %s/TCP dan %s/TCP (jika UFW aktif).\n' "$PANEL_INTERNAL" "$XRAY_INTERNAL"
-  printf 'Periksa provider NAT: mapping port panel %s -> %s/TCP; setiap port Xray di atas -> %s/TCP.\n' "$PANEL_PUBLIC" "$PANEL_INTERNAL" "$XRAY_INTERNAL"
+  printf 'Periksa provider NAT: mapping panel %s -> %s/TCP; arahkan setiap endpoint Xray nanti ke %s/TCP.\n' "$PANEL_PUBLIC" "$PANEL_INTERNAL" "$XRAY_INTERNAL"
   if [[ -z $TLS_CERT ]]; then printf 'PERINGATAN: panel masih HTTP. Gunakan reverse proxy HTTPS atau sertifikat yang cocok dengan hostname panel dari provider.\n'; fi
 }
 update_existing(){
