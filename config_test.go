@@ -323,6 +323,7 @@ func TestCustomInboundSettingsMustBeJSONObjects(t *testing.T) {
 
 func TestBuildMultipleDistinctManagedInboundsAndClientLinks(t *testing.T) {
 	s := testState(t)
+	s.Users[0].Name = "Client A #1"
 	vmessID, err := newUUID()
 	if err != nil {
 		t.Fatal(err)
@@ -381,6 +382,9 @@ func TestBuildMultipleDistinctManagedInboundsAndClientLinks(t *testing.T) {
 	}
 	if !strings.HasPrefix(links[0].Link, "vless://") || !strings.HasPrefix(links[1].Link, "vmess://"+vmessID+"@vmess.example.net:22152?") || !strings.HasPrefix(links[2].Link, "ss://") {
 		t.Fatal("client links do not match their protocol or mapped endpoint")
+	}
+	if !strings.HasSuffix(links[1].Link, "#Client%20A%20%231") || !strings.HasSuffix(links[2].Link, "#Client%20A%20%231") {
+		t.Fatal("VMess/Shadowsocks tags are not URI percent-encoded")
 	}
 	if strings.Contains(links[2].Link, s.RealityPrivateKey) {
 		t.Fatal("generated link exposed the REALITY private key")

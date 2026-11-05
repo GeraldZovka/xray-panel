@@ -565,13 +565,13 @@ func makeManagedLink(in ManagedInbound, user User, host string, port int) (strin
 		if _, err := parseUUID(credential); err != nil {
 			return "", err
 		}
-		return "vmess://" + credential + "@" + address + "?encryption=auto#" + url.QueryEscape(user.Name), nil
+		return "vmess://" + credential + "@" + address + "?encryption=auto&type=tcp#" + url.PathEscape(user.Name), nil
 	case "shadowsocks":
 		if !credentialRE.MatchString(credential) {
 			return "", errors.New("credential Shadowsocks tidak valid")
 		}
 		userinfo := base64.RawURLEncoding.EncodeToString([]byte("chacha20-ietf-poly1305:" + credential))
-		return "ss://" + userinfo + "@" + address + "#" + url.QueryEscape(user.Name), nil
+		return "ss://" + userinfo + "@" + address + "#" + url.PathEscape(user.Name), nil
 	default:
 		return "", fmt.Errorf("pembuatan link untuk %q belum didukung", in.Protocol)
 	}
