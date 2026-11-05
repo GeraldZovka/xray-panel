@@ -1,0 +1,32 @@
+[Unit]
+Description=Lightweight Xray VLESS/REALITY control panel
+After=network-online.target xray.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=xray-panel
+Group=xray-panel
+EnvironmentFile=/etc/xray-panel.env
+ExecStart=/usr/local/bin/xray-panel
+Restart=on-failure
+RestartSec=3s
+UMask=0077
+
+# Keep the web process unprivileged and limit filesystem access. The narrow
+# sudo helper is separately constrained by /etc/sudoers.d/xray-panel.
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ProtectSystem=strict
+ReadWritePaths=/var/lib/xray-panel /usr/local/etc/xray /usr/local/bin /usr/local/share/xray /etc/systemd/system /etc/logrotate.d /var/log/xray /tmp
+
+[Install]
+WantedBy=multi-user.target

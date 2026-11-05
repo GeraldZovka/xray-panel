@@ -1,0 +1,17 @@
+# Build artifacts
+/xray-panel
+/xray-panel-helper
+*.test
+
+# Runtime data and Xray config (never commit secrets)
+state.json
+config.json
+*.bak-*
+*.pre-xray-panel.*
+*.backup.json
+
+# Local credentials and generated certificates
+.env
+*.key
+*.crt
+*.pem

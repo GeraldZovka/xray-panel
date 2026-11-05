@@ -1,0 +1,2 @@
+Defaults:xray-panel !requiretty
+xray-panel ALL=(root) NOPASSWD: /usr/local/sbin/xray-panel-helper
