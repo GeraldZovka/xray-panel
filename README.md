@@ -10,6 +10,7 @@ Panel web ringan berbasis Go untuk mengelola satu instance Xray dengan banyak ak
 ├── panel.go                   # server HTTP, autentikasi, API, state
 ├── config.go                  # validasi, generator config/link VLESS, key
 ├── config_test.go             # unit test generator dan validasi
+├── tests/install_prompts_test.sh # test prompt port dan mapping installer
 ├── panel_test.go              # test izin file state
 ├── web.go                     # embed UI ke binary
 ├── web/index.html             # UI responsif, tanpa CDN
@@ -32,15 +33,11 @@ bash <(curl -fsSL https://raw.githubusercontent.com/GeraldZovka/xray-panel/main/
 
 Ganti `GeraldZovka/xray-panel` pada URL raw dengan repo Anda; installer lalu meminta URL clone HTTPS repo untuk menyimpannya ke `/opt/xray-panel`. Agar tak perlu prompt itu, jalankan dengan `XRAY_PANEL_REPO=https://github.com/GeraldZovka/xray-panel.git` sebelum `bash`.
 
-Installer meminta port publik/internal panel, jumlah serta alamat mapping NAT Xray, port internal Xray, password admin, dan pilihan TLS. Hostname publik panel tidak diminta: ambil hostname untuk mapping panel dari provider. Batas provider adalah **9 mapping total**: satu mapping untuk panel dan maksimal **8 endpoint Xray**, masing-masing dimasukkan sebagai `host:port`. Default yang dipilih:
+Installer meminta port publik panel, port internal panel, jumlah mapping NAT Xray, setiap alamat mapping Xray, dan port internal Xray. **Semua nilai port dan mapping harus Anda isi manual; tidak ada nilai otomatis atau default.** Jika input kosong atau tidak valid, installer akan meminta nilai itu lagi. Hostname publik panel tidak diminta karena provider menetapkannya untuk port tersebut; gunakan hostname yang diberikan provider saat mengatur mapping panel. Batas provider tetap **9 mapping total**: satu mapping panel dan maksimal **8 endpoint Xray**, masing-masing dimasukkan sebagai `host:port`.
 
-- Panel: hostname dari provider, publik `8080` → internal `8080`
-- Xray NAT: `vectis-nat-1-20151-ybh.vps-eu1.sumopod.my.id:20151` dan `vectis-nat-1-20152-zxf.vps-eu1.sumopod.my.id:20152`
-- Port internal Xray bersama: `443`
-- REALITY SNI/dest awal: `www.cloudflare.com` / `www.cloudflare.com:443`
-- Koneksi awal: VLESS + TCP + REALITY + Vision
+Semua endpoint Xray harus diarahkan provider ke port internal Xray yang sama sebagai TCP. Mapping publik panel wajib dan memakai satu dari 9 slot; hostname mapping panel diberikan oleh provider, sedangkan setiap mapping Xray dimasukkan manual sebagai `host:port` agar link VLESS memakai hostname dan port yang benar. Installer membatasi daftar Xray hingga 8 endpoint, mengecek jumlah/format mapping, duplikasi endpoint, port internal yang berbeda untuk panel dan Xray, lalu mengecek listener TCP lokal dan berhenti jika port internal sudah dipakai. Port publik NAT tidak dapat diperiksa dari VPS; pastikan setiap endpoint yang Anda masukkan tersedia pada provider.
 
-Port publik/internal panel `8080`, port internal Xray `443`, mapping NAT, dan target REALITY adalah **asumsi awal yang dapat diubah**. Semua endpoint Xray harus diarahkan provider ke port internal Xray yang sama sebagai TCP. Mapping publik panel wajib dan memakai satu dari 9 slot; hostname mapping panel diberikan oleh provider, sedangkan setiap mapping Xray dimasukkan sebagai `host:port` agar link VLESS memakai hostname dan port yang benar. Installer membatasi daftar Xray hingga 8 endpoint, mengecek jumlah/format mapping, duplikasi endpoint, port internal yang berbeda untuk panel dan Xray, lalu mengecek listener TCP lokal dan berhenti jika port internal sudah dipakai. Port publik NAT tidak dapat diperiksa dari VPS; pastikan setiap endpoint tersedia pada provider.
+Nilai awal lain yang bukan port atau mapping tetap: REALITY SNI/dest `www.cloudflare.com` / `www.cloudflare.com:443` dan koneksi VLESS + TCP + REALITY + Vision. Contoh hostname/port di bagian NAT di bawah hanya ilustrasi, bukan nilai yang diisi otomatis oleh installer.
 
 Jika password admin dikosongkan, installer membuat password acak dan menampilkannya **sekali setelah state tersimpan**. Simpan di password manager. Rerun installer tidak mereset password, key, user, atau pengaturan yang tersimpan.
 
@@ -48,7 +45,7 @@ Installer memasang dependency OS dari repositori Ubuntu, meng-clone repo, memban
 
 ## NAT, port, dan TCP saja
 
-NAT provider harus mengarahkan **hostname-panel-dari-provider:port-publik-panel → port-internal-panel** dan setiap **Xray publik → port internal Xray yang sama**, semuanya sebagai TCP. Gunakan hostname panel yang ditampilkan provider untuk membuka URL panel, misalnya `http://HOST_PANEL:8080`. Contoh hostname dan port endpoint Xray yang dipakai aplikasi:
+NAT provider harus mengarahkan **hostname-panel-dari-provider:port-publik-panel → port-internal-panel** dan setiap **Xray publik → port internal Xray yang sama**, semuanya sebagai TCP. Gunakan hostname panel yang ditampilkan provider dan port publik panel yang Anda isi untuk membuka URL panel, misalnya `http://HOST_PANEL:<port-publik-panel-Anda>`. Contoh hostname dan port endpoint Xray berikut hanya ilustrasi nilai manual:
 
 ```text
 vectis-nat-1-20151-ybh.vps-eu1.sumopod.my.id:20151 → 443/TCP
@@ -113,17 +110,18 @@ Untuk reverse proxy HTTPS, bind panel ke loopback dengan mengubah `PANEL_ADDR=12
 
 Lakukan lebih dulu pada VPS uji atau dengan backup yang dapat dipulihkan.
 
-1. **Konflik port:** sebelum instal, pilih port internal yang sudah listen (misalnya `22` jika SSH menggunakannya), masukkan sebagai port internal panel, lalu jalankan installer. Pastikan installer menampilkan proses/port yang bentrok dan berhenti sebelum mengganti config.
-2. **Instalasi baru:** pastikan installer selesai, `systemctl status xray xray-panel`, dan `ss -ltnp` menampilkan hanya port internal yang diharapkan. Pastikan tidak ada listener UDP dari panel ini.
-3. **NAT dan firewall:** konfirmasi mapping TCP publik→internal di provider, akses URL panel dari luar VPS, dan tes koneksi TCP ke port publik Xray. Uji juga dari jaringan berbeda jika memungkinkan.
-4. **Login:** password benar masuk; salah 5 kali dibatasi; cookie panel memiliki `HttpOnly`/`SameSite=Strict`. Jika HTTP, peringatan keamanan terlihat.
-5. **Pengguna dan QR:** tambah user, salin link, pindai QR di klien VLESS yang mendukung REALITY + Vision. Tes koneksi TCP dan akses situs; pastikan key privat tidak ada di link, QR, endpoint state, atau log panel.
-6. **Nonaktif/hapus user:** nonaktifkan user dan pastikan koneksi barunya gagal, aktifkan kembali lalu uji; hapus user dan pastikan hilang dari daftar/config.
-7. **Perubahan gagal:** masukkan dest atau XHTTP path yang tidak valid, simpan, pastikan UI menunjukkan error dan config sebelumnya tetap bekerja. Untuk uji rollback restart, lakukan hanya di staging dengan port internal yang sengaja bentrok.
-8. **Mode XHTTP:** ubah ke XHTTP, buat/scan ulang link dengan klien yang mendukung VLESS XHTTP REALITY, lalu uji. Kembali ke TCP Vision bila klien tidak mendukungnya.
-9. **Backup/restore:** unduh backup, simpan secara aman, ubah user/settings, restore backup dan pastikan config aktif dipulihkan. Pastikan restore tidak mengganti password admin yang sedang dipakai.
-10. **Password/TLS:** ubah password admin, pastikan sesi lama harus login ulang; bila TLS diaktifkan, buka `https://HOST:PORT` dan verifikasi bahwa browser menunjukkan TLS (sertifikat self-signed akan tetap diberi warning).
-11. **Update/uninstall:** pada staging, uji update dan pastikan pengguna tetap ada. Untuk uninstall total, pastikan konfirmasi `hapus-total` menjelaskan bahwa Xray, konfigurasi, key, pengguna, sertifikat, backup, dan aturan firewall bertanda aplikasi akan dihapus.
+1. **Prompt manual tanpa default:** jalankan hanya tes prompt `bash tests/install_prompts_test.sh`. Saat uji instalasi di staging, tekan Enter pada setiap prompt port, jumlah mapping, dan endpoint; pastikan semua diminta ulang dan tidak ada nilai otomatis. Pastikan 1–8 endpoint Xray yang unik diterima, sehingga total dengan mapping panel tidak melebihi 9.
+2. **Konflik port:** sebelum instal, pilih port internal yang sudah listen (misalnya `22` jika SSH menggunakannya), masukkan sebagai port internal panel, lalu jalankan installer. Pastikan installer menampilkan proses/port yang bentrok dan berhenti sebelum mengganti config.
+3. **Instalasi baru:** pastikan installer selesai, `systemctl status xray xray-panel`, dan `ss -ltnp` menampilkan hanya port internal yang diharapkan. Pastikan tidak ada listener UDP dari panel ini.
+4. **NAT dan firewall:** konfirmasi mapping TCP publik→internal di provider, akses URL panel dari luar VPS, dan tes koneksi TCP ke port publik Xray. Uji juga dari jaringan berbeda jika memungkinkan.
+5. **Login:** password benar masuk; salah 5 kali dibatasi; cookie panel memiliki `HttpOnly`/`SameSite=Strict`. Jika HTTP, peringatan keamanan terlihat.
+6. **Pengguna dan QR:** tambah user, salin link, pindai QR di klien VLESS yang mendukung REALITY + Vision. Tes koneksi TCP dan akses situs; pastikan key privat tidak ada di link, QR, endpoint state, atau log panel.
+7. **Nonaktif/hapus user:** nonaktifkan user dan pastikan koneksi barunya gagal, aktifkan kembali lalu uji; hapus user dan pastikan hilang dari daftar/config.
+8. **Perubahan gagal:** masukkan dest atau XHTTP path yang tidak valid, simpan, pastikan UI menunjukkan error dan config sebelumnya tetap bekerja. Untuk uji rollback restart, lakukan hanya di staging dengan port internal yang sengaja bentrok.
+9. **Mode XHTTP:** ubah ke XHTTP, buat/scan ulang link dengan klien yang mendukung VLESS XHTTP REALITY, lalu uji. Kembali ke TCP Vision bila klien tidak mendukungnya.
+10. **Backup/restore:** unduh backup, simpan secara aman, ubah user/settings, restore backup dan pastikan config aktif dipulihkan. Pastikan restore tidak mengganti password admin yang sedang dipakai.
+11. **Password/TLS:** ubah password admin, pastikan sesi lama harus login ulang; bila TLS diaktifkan, buka `https://HOST:PORT` dan verifikasi bahwa browser menunjukkan TLS (sertifikat self-signed akan tetap diberi warning).
+12. **Update/uninstall:** pada staging, uji update dan pastikan pengguna tetap ada. Untuk uninstall total, pastikan konfirmasi `hapus-total` menjelaskan bahwa Xray, konfigurasi, key, pengguna, sertifikat, backup, dan aturan firewall bertanda aplikasi akan dihapus.
 
 ## Troubleshooting
 
@@ -136,4 +134,4 @@ Lakukan lebih dulu pada VPS uji atau dengan backup yang dapat dipulihkan.
 
 ## Verifikasi yang dilakukan pada paket sumber
 
-Di lingkungan pengembangan: `go test -mod=vendor ./...`, `go vet`, build binary panel/helper, `bash -n install.sh`, syntax `systemd-analyze verify` untuk `LoadCredential`, dan pemeriksaan `xray run -test -config` untuk mode TCP, mode XHTTP, serta config awal tanpa user menggunakan binary resmi Xray `26.10.31` dijalankan; semua config menjawab `Configuration OK`. Smoke test HTTP lokal dengan helper tiruan juga memeriksa login, penolakan CSRF, tambah user, redaksi private key dari API, QR PNG, dan backup. **Belum** diuji sebagai service systemd di VPS, pada NAT provider, dengan UFW aktif, atau klien VLESS eksternal. Checklist di atas tetap perlu dijalankan setelah instalasi VPS.
+Tes prompt instalasi non-destruktif: `bash tests/install_prompts_test.sh`. Di lingkungan pengembangan: `go test -mod=vendor ./...`, `go vet`, build binary panel/helper, `bash -n install.sh`, syntax `systemd-analyze verify` untuk `LoadCredential`, dan pemeriksaan `xray run -test -config` untuk mode TCP, mode XHTTP, serta config awal tanpa user menggunakan binary resmi Xray `26.10.31` dijalankan; semua config menjawab `Configuration OK`. Smoke test HTTP lokal dengan helper tiruan juga memeriksa login, penolakan CSRF, tambah user, redaksi private key dari API, QR PNG, dan backup. **Belum** diuji sebagai service systemd di VPS, pada NAT provider, dengan UFW aktif, atau klien VLESS eksternal. Checklist di atas tetap perlu dijalankan setelah instalasi VPS.

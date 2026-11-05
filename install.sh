@@ -97,10 +97,11 @@ EOF
   chmod 0644 "$dir/90-xray-panel-credentials.conf"
 }
 ask_port(){
-  local label=$1 default=$2 variable=$3 answer
+  local label=$1 variable=$2 answer
   while :; do
-    read -r -p "$label [$default]: " answer || true
-    answer=${answer:-$default}
+    answer=
+    if ! read -r -p "$label (1-65535): " answer; then die "Input untuk $label diperlukan."; fi
+    if [[ -z $answer ]]; then printf 'Port wajib diisi; masukkan angka antara 1 dan 65535.\n'; continue; fi
     if [[ $answer =~ ^[0-9]{1,5}$ ]] && (( answer >= 1 && answer <= 65535 )); then printf -v "$variable" '%s' "$answer";return;fi
     printf 'Port harus angka antara 1 dan 65535.\n'
   done
@@ -119,25 +120,28 @@ validate_nat_mapping(){
   (( 10#$port >= 1 && 10#$port <= 65535 ))
 }
 ask_nat_mappings(){
-  local answer count index default endpoint existing first
+  local answer count index endpoint existing first duplicate
   while :; do
-    read -r -p 'Jumlah mapping NAT Xray (1-8; 1 mapping provider dipakai panel) [2]: ' answer || true
-    count=${answer:-2}
-    if [[ $count =~ ^[1-8]$ ]]; then break; fi
+    answer=
+    if ! read -r -p 'Jumlah mapping NAT Xray (1-8; 1 mapping provider dipakai panel): ' answer; then die 'Jumlah mapping NAT Xray diperlukan.'; fi
+    if [[ -z $answer ]]; then printf 'Jumlah mapping wajib diisi; masukkan angka 1 sampai 8.\n'; continue; fi
+    if [[ $answer =~ ^[1-8]$ ]]; then count=$answer; break; fi
     printf 'Jumlah mapping Xray harus angka 1 sampai 8; panel memakai 1 slot provider.\n'
   done
   NAT_MAPPING_LIST=()
   for ((index=1; index<=count; index++)); do
-    default=
-    case $index in
-      1) default='vectis-nat-1-20151-ybh.vps-eu1.sumopod.my.id:20151' ;;
-      2) default='vectis-nat-1-20152-zxf.vps-eu1.sumopod.my.id:20152' ;;
-    esac
-    read -r -p "Mapping NAT Xray #$index host:port${default:+ [$default]}: " answer || true
-    endpoint=${answer:-$default}
-    validate_nat_mapping "$endpoint" || die "Format mapping NAT tidak valid: $endpoint (gunakan host:port)."
-    for existing in "${NAT_MAPPING_LIST[@]}"; do
-      [[ ${existing,,} != "${endpoint,,}" ]] || die "Mapping NAT duplikat: $endpoint"
+    while :; do
+      answer=
+      if ! read -r -p "Mapping NAT Xray #$index host:port: " answer; then die "Mapping NAT Xray #$index diperlukan."; fi
+      if [[ -z $answer ]]; then printf 'Mapping host:port wajib diisi; silakan masukkan ulang.\n'; continue; fi
+      endpoint=$answer
+      if ! validate_nat_mapping "$endpoint"; then printf 'Format mapping NAT tidak valid (gunakan host:port dengan port 1 sampai 65535).\n'; continue; fi
+      duplicate=0
+      for existing in "${NAT_MAPPING_LIST[@]}"; do
+        if [[ ${existing,,} == "${endpoint,,}" ]]; then duplicate=1; break; fi
+      done
+      if (( duplicate )); then printf 'Mapping NAT duplikat; masukkan endpoint yang berbeda.\n'; continue; fi
+      break
     done
     NAT_MAPPING_LIST+=("$endpoint")
   done
@@ -259,10 +263,10 @@ install_fresh(){
   fi
   say 'Pengaturan awal. Setiap endpoint Xray publik harus dipetakan provider ke port internal Xray yang sama.'
   say 'Hostname mapping panel diambil dari provider; installer hanya meminta port publik dan internal panel.'
-  ask_port 'Port publik panel' 8080 PANEL_PUBLIC
-  ask_port 'Port internal panel' 8080 PANEL_INTERNAL
+  ask_port 'Port publik panel' PANEL_PUBLIC
+  ask_port 'Port internal panel' PANEL_INTERNAL
   ask_nat_mappings
-  ask_port 'Port internal Xray' 443 XRAY_INTERNAL
+  ask_port 'Port internal Xray' XRAY_INTERNAL
   check_new_ports "$PANEL_PUBLIC" "$PANEL_INTERNAL" "$XRAY_NAT_MAPPINGS" "$XRAY_INTERNAL"
   ask_password
   build_app
@@ -354,10 +358,16 @@ uninstall_panel(){
   printf 'Paket OS umum (mis. curl, git, Go, sudo, dan UFW) tetap terpasang agar software lain di VPS tidak terganggu.\n'
 }
 
-require_root
-case ${1:-install} in
-  install) install_fresh ;;
-  update) update_existing ;;
-  uninstall) uninstall_panel ;;
-  *) printf 'Pemakaian: install.sh [install|update|uninstall]\n'; exit 2 ;;
-esac
+main(){
+  require_root
+  case ${1:-install} in
+    install) install_fresh ;;
+    update) update_existing ;;
+    uninstall) uninstall_panel ;;
+    *) printf 'Pemakaian: install.sh [install|update|uninstall]\n'; exit 2 ;;
+  esac
+}
+
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+  main "$@"
+fi
