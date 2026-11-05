@@ -1,10 +1,35 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestParseAddInboundRequestDecodesAndValidatesPort(t *testing.T) {
+	valid := map[string]json.RawMessage{
+		"protocol":     json.RawMessage(`"vmess"`),
+		"internalPort": json.RawMessage(`20152`),
+	}
+	protocol, port, err := parseAddInboundRequest(valid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if protocol != "vmess" || port != 20152 {
+		t.Fatalf("parsed protocol/port = %q/%d, want vmess/20152", protocol, port)
+	}
+	for _, invalid := range []map[string]json.RawMessage{
+		{"protocol": json.RawMessage(`"vmess"`)},
+		{"protocol": json.RawMessage(`"vmess"`), "internalPort": json.RawMessage(`0`)},
+		{"protocol": json.RawMessage(`"vmess"`), "internalPort": json.RawMessage(`65536`)},
+		{"protocol": json.RawMessage(`"vless"`), "internalPort": json.RawMessage(`20152`)},
+	} {
+		if _, _, err := parseAddInboundRequest(invalid); err == nil {
+			t.Fatalf("accepted invalid inbound request: %#v", invalid)
+		}
+	}
+}
 
 func TestStateIsStoredPrivate(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "private-state")

@@ -687,16 +687,27 @@ func (s *server) updateSettings(raw map[string]json.RawMessage) error {
 	return s.transact(func(st *appState) error { st.Settings = in; return validateSettings(st.Settings) })
 }
 
-func (s *server) addInbound(raw map[string]json.RawMessage) (any, error) {
+func parseAddInboundRequest(raw map[string]json.RawMessage) (string, int, error) {
 	var in struct {
 		Protocol     string `json:"protocol"`
 		InternalPort int    `json:"internalPort"`
 	}
 	if err := json.Unmarshal(raw["protocol"], &in.Protocol); err != nil || !contains(managedInboundProtocols, in.Protocol) {
-		return nil, errors.New("pilih protokol tambahan VMess atau Shadowsocks")
+		return "", 0, errors.New("pilih protokol tambahan VMess atau Shadowsocks")
+	}
+	if err := json.Unmarshal(raw["internalPort"], &in.InternalPort); err != nil {
+		return "", 0, errors.New("port internal harus angka antara 1 dan 65535")
 	}
 	if !validPort(in.InternalPort) {
-		return nil, errors.New("port internal harus antara 1 dan 65535")
+		return "", 0, errors.New("port internal harus antara 1 dan 65535")
+	}
+	return in.Protocol, in.InternalPort, nil
+}
+
+func (s *server) addInbound(raw map[string]json.RawMessage) (any, error) {
+	protocol, internalPort, err := parseAddInboundRequest(raw)
+	if err != nil {
+		return nil, err
 	}
 	id, err := randomToken(12)
 	if err != nil {
@@ -707,13 +718,13 @@ func (s *server) addInbound(raw map[string]json.RawMessage) (any, error) {
 			return errors.New("maksimal 8 inbound tambahan dikelola panel")
 		}
 		for _, current := range st.Inbounds {
-			if current.Protocol == in.Protocol {
+			if current.Protocol == protocol {
 				return errors.New("inbound aktif sudah memakai protokol itu")
 			}
 		}
-		managed := ManagedInbound{ID: id, Protocol: in.Protocol, InternalPort: in.InternalPort}
+		managed := ManagedInbound{ID: id, Protocol: protocol, InternalPort: internalPort}
 		for i := range st.Users {
-			credential, err := newProtocolCredential(in.Protocol)
+			credential, err := newProtocolCredential(protocol)
 			if err != nil {
 				return err
 			}
