@@ -132,7 +132,6 @@ check_new_ports(){
   done
 }
 ask_install_ports(){
-  ask_port 'Port publik panel' PANEL_PUBLIC
   ask_port 'Port internal panel' PANEL_INTERNAL
   ask_port_different 'Port internal Xray' XRAY_INTERNAL "$PANEL_INTERNAL"
   check_new_ports "$PANEL_INTERNAL" "$XRAY_INTERNAL"
@@ -183,7 +182,6 @@ write_service_config(){
   {
     printf 'XRAY_PANEL_STATE=%s\n' "$STATE_FILE"
     printf 'PANEL_ADDR=0.0.0.0:%s\n' "$PANEL_INTERNAL"
-    printf 'PANEL_PUBLIC_PORT=%s\n' "$PANEL_PUBLIC"
     if [[ -n ${TLS_CERT:-} ]]; then printf 'PANEL_TLS_CERT=%s\nPANEL_TLS_KEY=%s\n' "$TLS_CERT" "$TLS_KEY"; fi
   } > /etc/xray-panel.env
   chown root:"$PANEL_USER" /etc/xray-panel.env
@@ -228,7 +226,7 @@ install_fresh(){
     say 'Update selesai; konfigurasi, pengguna, key dan password dipertahankan.'
     return
   fi
-  say 'Pengaturan awal. Masukkan port manual; hostname dan port publik endpoint Xray diisi nanti di Pengaturan panel.'
+  say 'Pengaturan awal. Masukkan dua port internal manual; hostname dan port publik panel serta endpoint Xray ditetapkan provider setelah pemetaan NAT tersedia.'
   ask_install_ports
   ask_password
   build_app
@@ -238,7 +236,7 @@ install_fresh(){
   write_service_config
   ask_tls
   if [[ -n $TLS_CERT ]]; then write_service_config; fi
-  printf '%s' "$ADMIN_PASSWORD" | /usr/local/bin/xray-panel init --state "$STATE_FILE" --panel-public-port "$PANEL_PUBLIC" --panel-internal-port "$PANEL_INTERNAL" --xray-internal-port "$XRAY_INTERNAL"
+  printf '%s' "$ADMIN_PASSWORD" | /usr/local/bin/xray-panel init --state "$STATE_FILE" --panel-internal-port "$PANEL_INTERNAL" --xray-internal-port "$XRAY_INTERNAL"
   chown "$PANEL_USER":"$PANEL_USER" "$STATE_FILE"
   chmod 0600 "$STATE_FILE"
   if [[ -n $GENERATED_PASSWORD ]]; then printf '\nPASSWORD ADMIN (simpan sekarang; tidak akan ditampilkan lagi):\n%s\n\n' "$GENERATED_PASSWORD"; fi
@@ -247,13 +245,13 @@ install_fresh(){
   local scheme=http
   [[ -z $TLS_CERT ]] || scheme=https
   say 'Instalasi selesai.'
-  printf 'Panel: %s://<hostname-panel-dari-provider>:%s\n' "$scheme" "$PANEL_PUBLIC"
-  printf 'Mapping panel provider: <hostname-panel-dari-provider>:%s -> %s/TCP.\n' "$PANEL_PUBLIC" "$PANEL_INTERNAL"
-  printf 'Port internal Xray: %s/TCP; masukkan hostname:port publik Xray di Pengaturan panel setelah provider memberikannya.\n' "$XRAY_INTERNAL"
+  printf 'Panel: %s://<hostname-panel>:<port-publik-acak-dari-provider>\n' "$scheme"
+  printf 'Mapping panel provider: gunakan hostname:port publik yang provider tetapkan -> %s/TCP.\n' "$PANEL_INTERNAL"
+  printf 'Port internal Xray: %s/TCP; masukkan hostname:port publik yang provider tetapkan untuk Xray di Pengaturan panel setelah detail mapping tersedia.\n' "$XRAY_INTERNAL"
   printf 'Batas provider: 1 mapping panel + maksimal 8 endpoint Xray (9 total).\n'
   printf 'Mode awal: VLESS + TCP + REALITY + Vision. UDP diblokir.\n'
   printf 'Port UFW internal yang diizinkan: %s/TCP dan %s/TCP (jika UFW aktif).\n' "$PANEL_INTERNAL" "$XRAY_INTERNAL"
-  printf 'Periksa provider NAT: mapping panel %s -> %s/TCP; arahkan setiap endpoint Xray nanti ke %s/TCP.\n' "$PANEL_PUBLIC" "$PANEL_INTERNAL" "$XRAY_INTERNAL"
+  printf 'Periksa provider NAT: mapping panel ke %s/TCP dan setiap endpoint Xray ke %s/TCP; provider menetapkan hostname serta port publik acak, gunakan TCP.\n' "$PANEL_INTERNAL" "$XRAY_INTERNAL"
   if [[ -z $TLS_CERT ]]; then printf 'PERINGATAN: panel masih HTTP. Gunakan reverse proxy HTTPS atau sertifikat yang cocok dengan hostname panel dari provider.\n'; fi
 }
 update_existing(){

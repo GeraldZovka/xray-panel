@@ -9,7 +9,7 @@ import (
 
 func testState(t *testing.T) appState {
 	t.Helper()
-	s, err := makeDefaultState(8080, 8080, 443, "bcrypt-hash-placeholder")
+	s, err := makeDefaultState(8080, 443, "bcrypt-hash-placeholder")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestPendingPublicPortsBecomeLinksAfterProviderHostnameIsEntered(t *testing.
 	}
 }
 func TestDefaultStateCanWaitForProviderEndpoint(t *testing.T) {
-	s, err := makeDefaultState(20150, 20151, 443, "bcrypt-hash-placeholder")
+	s, err := makeDefaultState(20151, 443, "bcrypt-hash-placeholder")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +166,7 @@ func TestDefaultStateCanWaitForProviderEndpoint(t *testing.T) {
 	}
 }
 func TestDefaultStateRejectsCollidingInternalListeners(t *testing.T) {
-	if _, err := makeDefaultState(8080, 443, 443, "bcrypt-hash-placeholder"); err == nil {
+	if _, err := makeDefaultState(443, 443, "bcrypt-hash-placeholder"); err == nil {
 		t.Fatal("accepted identical panel and Xray internal listener ports")
 	}
 }

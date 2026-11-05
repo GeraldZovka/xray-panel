@@ -182,7 +182,7 @@ func newRealityKeys() (string, string, error) {
 	return enc.EncodeToString(key.Bytes()), enc.EncodeToString(key.PublicKey().Bytes()), nil
 }
 
-func makeDefaultState(panelPublicPort, panelInternalPort, xrayInternalPort int, passwordHash string) (appState, error) {
+func makeDefaultState(panelInternalPort, xrayInternalPort int, passwordHash string) (appState, error) {
 	priv, pub, err := newRealityKeys()
 	if err != nil {
 		return appState{}, err
@@ -204,8 +204,8 @@ func makeDefaultState(panelPublicPort, panelInternalPort, xrayInternalPort int, 
 		Users: []User{}, AdminHash: passwordHash,
 		RealityPrivateKey: priv, RealityPublicKey: pub, RealityShortID: shortID,
 	}
-	if !validPort(panelPublicPort) || !validPort(panelInternalPort) {
-		return appState{}, errors.New("port panel tidak valid")
+	if !validPort(panelInternalPort) {
+		return appState{}, errors.New("port internal panel tidak valid")
 	}
 	if panelInternalPort == xrayInternalPort {
 		return appState{}, errors.New("port internal panel dan Xray harus berbeda")

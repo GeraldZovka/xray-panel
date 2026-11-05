@@ -151,7 +151,6 @@ func main() {
 func initialize(args []string) error {
 	fs := newFlagSet("init")
 	statePath := fs.String("state", defaultStatePath, "state file path")
-	panelPublic := fs.Int("panel-public-port", 0, "public panel port")
 	panelInternal := fs.Int("panel-internal-port", 0, "internal panel port")
 	xrayInternal := fs.Int("xray-internal-port", 0, "internal Xray port")
 	if err := fs.Parse(args); err != nil {
@@ -178,7 +177,7 @@ func initialize(args []string) error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	st, err := makeDefaultState(*panelPublic, *panelInternal, *xrayInternal, string(hash))
+	st, err := makeDefaultState(*panelInternal, *xrayInternal, string(hash))
 	if err != nil {
 		return err
 	}
