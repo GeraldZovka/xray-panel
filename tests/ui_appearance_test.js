@@ -10,7 +10,10 @@ assert.equal(matches.length, 1, 'expected one embedded UI script');
 const script = matches[0][1];
 new vm.Script(script, { filename: 'web/index.html:inline-script' });
 
-assert.match(html, /<option value="custom">Gambar kustom<\/option>/, 'custom mode is selectable');
+assert.match(html, /<option value="custom">Gambar khusus<\/option>/, 'custom mode is selectable');
+assert.match(html, /id="languageSelect"[\s\S]*?<option value="id">Bahasa Indonesia<\/option>[\s\S]*?<option value="en">English<\/option>/, 'Indonesian and English can be selected in Settings');
+assert.match(script, /xray-panel-language/, 'language choice is persisted in the browser');
+assert.match(script, /document\.documentElement\.lang=language/, 'document language follows the selected language');
 assert.match(html, /id="customBackgroundFile" type="file" accept="image\/png,image\/jpeg,image\/webp"/, 'file picker restricts image formats');
 assert.match(html, /id="applyCustomBackground"[^>]*>Terapkan<\/button>/, 'apply action is present');
 assert.match(html, /id="resetCustomBackground"[^>]*>Reset<\/button>/, 'reset action is present');
@@ -20,6 +23,8 @@ assert.match(script, /fetch\('\/api\/background',\{method:'PUT'/, 'custom image 
 assert.match(script, /api\('\/api\/background',null,'DELETE'\)/, 'custom image can be deleted server-side');
 assert.match(html, /diselaraskan ke perangkat lain/, 'appearance is described as shared across devices');
 assert.match(html, /background-size:cover/, 'background fills the page');
+assert.match(html, /position:fixed;top:0;left:0;width:100vw;height:100vh/, 'background is fixed to the viewport instead of scroll content');
+assert.match(html, /@supports\(height:100lvh\)\{#backdrop\{height:100lvh\}\}/, 'mobile background uses a stable large viewport height');
 assert.match(html, /rgba\(255,255,255,\.62\)/, 'custom glass surface stays visibly transparent');
 assert.match(html, /backdrop-filter:blur\(16px\) saturate\(145%\)/, 'custom mode uses visible liquid-glass styling');
 assert.match(html, /id="addProfileButton"/, 'page-level add profile action is present');
@@ -28,13 +33,15 @@ assert.match(html, /id="newUserInbound" required/, 'new-user profile selection i
 assert.match(script, /action:'addUser',name,inboundId/, 'new user request sends its selected profile');
 assert.match(html, /© 2026 Gerald Zovka[\s\S]*?Repositori proyek/, 'footer uses a repository credit when no LICENSE file exists');
 assert.doesNotMatch(html, /Panel lokal untuk mengelola konektivitas server/, 'old footer text is removed');
+assert.doesNotMatch(script, /addEventListener\(['"]scroll/, 'background scaling is not changed by a scroll listener');
 
 const validatorLine = script.match(/^async function validateBackgroundFile\(file\)\{[^\n]*\}$/m)?.[0];
 assert.ok(validatorLine, 'image validator is present');
 let dimensions = [1920, 1080];
-const validate = vm.runInNewContext(`${validatorLine}; validateBackgroundFile`, {
-  imageDimensions: async () => dimensions,
-});
+  const validate = vm.runInNewContext(`${validatorLine}; validateBackgroundFile`, {
+    imageDimensions: async () => dimensions,
+    tr: (text) => text,
+  });
 (async () => {
   const accepted = { type: 'image/webp', size: 1024 };
   assert.equal(await validate(accepted), accepted, 'valid WebP is accepted');

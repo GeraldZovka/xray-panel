@@ -1,6 +1,6 @@
 # Xray Protocol Panel — Xray-core inbound management
 
-Panel web ringan berbasis Go untuk mengelola instance Xray di VPS Ubuntu ARM64/amd64 dengan NAT provider. Panel mempertahankan profil utama VLESS + TCP + REALITY + Vision dan dapat mengelola banyak inbound tambahan secara bersamaan, masing-masing dengan nama, port, protocol, mapping, dan status sendiri.
+Panel web ringan berbasis Go untuk mengelola instance Xray di VPS Ubuntu ARM64/amd64. Panel mempertahankan profil utama VLESS + TCP + REALITY + Vision dan dapat mengelola banyak inbound tambahan secara bersamaan, masing-masing dengan nama, port, protokol, endpoint publik, dan status sendiri.
 
 ## Isi repo
 
@@ -33,28 +33,28 @@ bash <(curl -fsSL https://raw.githubusercontent.com/GeraldZovka/xray-protocol-pa
 
 Ganti `GeraldZovka/xray-protocol-panel` pada URL raw dengan repo Anda; installer lalu meminta URL clone HTTPS repo untuk menyimpannya ke `/opt/xray-panel`. Agar tak perlu prompt itu, jalankan dengan `XRAY_PANEL_REPO=https://github.com/GeraldZovka/xray-protocol-panel.git` sebelum `bash`.
 
-Pada instalasi baru, installer hanya meminta dua port internal secara manual: port internal panel dan port internal Xray. **Tidak ada nilai bawaan; input kosong atau tidak valid akan diminta ulang.** Kedua port internal harus berbeda. Installer tidak menanyakan hostname atau port publik, jumlah endpoint, maupun daftar mapping. Provider menetapkan hostname dan port publik acak untuk mapping panel dan Xray. Setelah detail mapping tersedia dari provider, arahkan mapping panel ke port internal panel dan tambahkan endpoint Xray di kartu inbound **Dashboard**. Batas provider tetap **9 mapping total**: satu mapping panel dan maksimal **8 endpoint Xray**.
+Pada instalasi baru, installer hanya meminta dua port internal secara manual: port internal panel dan port internal Xray. **Tidak ada nilai bawaan; input kosong atau tidak valid akan diminta ulang.** Kedua port internal harus berbeda. Installer tidak meminta hostname atau port publik. Jika Anda menggunakan endpoint publik, masukkan host:port pada kartu inbound di **Dashboard** setelah endpoint tersedia.
 
-Untuk mapping panel, gunakan hostname:port publik yang ditetapkan provider saat membuka panel, lalu arahkan mapping TCP itu ke port internal panel yang dipilih saat instalasi. Jangan masukkan mapping panel ke daftar endpoint Xray. Setelah provider memberikan detail endpoint Xray, masukkan tiap pasangan `hostname:port` pada kartu inbound terkait di **Dashboard**; setiap mapping TCP diarahkan ke port internal inbound yang bersangkutan. Detail port publik belum tersedia saat instalasi dan nilainya dapat acak, jadi jangan menebak atau menganggap port publik sama dengan port internal. Installer mengecek kedua port internal dan berhenti jika salah satunya sudah dipakai.
-Nilai awal non-port tetap: REALITY SNI/dest `www.cloudflare.com` / `www.cloudflare.com:443` dan koneksi VLESS + TCP + REALITY + Vision. Hostname dan port publik endpoint Xray diberikan provider dan diisi melalui panel.
+Panel menyimpan endpoint publik per inbound dalam bentuk `host:port` untuk membuat tautan dan QR koneksi. Pastikan endpoint yang dimasukkan sesuai dengan cara jaringan Anda meneruskan koneksi ke port internal inbound. Panel tidak mengubah firewall atau pengaturan jaringan di luar aplikasi. Installer mengecek kedua port internal dan berhenti jika salah satunya sudah dipakai.
+Nilai awal non-port tetap: REALITY SNI/dest `www.cloudflare.com` / `www.cloudflare.com:443` dan koneksi VLESS + TCP + REALITY + Vision. Endpoint publik Xray diisi melalui panel jika diperlukan.
 
-Jika password admin dikosongkan, installer membuat password acak dan menampilkannya **sekali setelah state tersimpan**. Simpan di password manager. Rerun installer tidak mereset password, key, user, atau pengaturan yang tersimpan.
+Jika kata sandi admin dikosongkan, installer membuat kata sandi acak dan menampilkannya **sekali setelah data tersimpan**. Simpan di pengelola kata sandi. Menjalankan ulang installer tidak mereset kata sandi, kunci, pengguna, atau pengaturan yang tersimpan.
 
-Installer memasang dependency OS dari repositori Ubuntu, meng-clone repo, membangun Go binary dengan satu worker, memasang Xray dari [installer resmi XTLS](https://github.com/XTLS/Xray-install), menyimpan backup config lama, dan memasang unit systemd. Source module Go sudah berada di `vendor/`; build tidak perlu meminta dependency ke Go module proxy.
+Installer memasang dependensi sistem operasi dari repositori Ubuntu, meng-clone repositori, membangun biner Go dengan satu worker, memasang Xray dari [installer resmi XTLS](https://github.com/XTLS/Xray-install), menyimpan cadangan konfigurasi lama, dan memasang unit systemd. Modul sumber Go sudah berada di `vendor/`; proses build tidak perlu meminta dependensi ke proxy modul Go.
 
-## NAT, port, dan transport
+## Endpoint publik, port, dan transport
 
-Profil utama VLESS + TCP + REALITY + Vision, UUID pengguna, listener, dan key yang sudah ada tetap dipertahankan. Dari Dashboard, admin dapat menambahkan beberapa profil VLESS TCP + REALITY + Vision maupun VLESS XHTTP + REALITY; tiap profil memakai listener, port, key REALITY, dan path XHTTP (bila dipilih) sendiri. VMess dan Shadowsocks juga tersedia sebagai inbound tambahan TCP dengan credential per profil. Pengguna mendapat tautan klien terpisah untuk setiap endpoint yang terkonfigurasi. Lihat [dokumentasi REALITY resmi](https://xtls.github.io/en/config/transports/reality.html) dan [matriks kompatibilitas transport Xray](https://xtls.github.io/en/config/transport.html).
+Profil utama VLESS + TCP + REALITY + Vision, UUID pengguna, listener, dan kunci yang sudah ada tetap dipertahankan. Dari Dashboard, admin dapat menambahkan beberapa profil VLESS TCP + REALITY + Vision maupun VLESS XHTTP + REALITY; tiap profil memakai listener, port, kunci REALITY, dan path XHTTP (bila dipilih) sendiri. VMess dan Shadowsocks juga tersedia sebagai inbound tambahan TCP dengan kredensial per profil. Pengguna mendapat tautan klien terpisah untuk setiap endpoint yang terkonfigurasi. Lihat [dokumentasi REALITY resmi](https://xtls.github.io/en/config/transports/reality.html) dan [matriks kompatibilitas transport Xray](https://xtls.github.io/en/config/transport.html).
 
-Provider menetapkan hostname dan port publik sendiri. Panel tidak menebak endpoint: masukkan `hostname:port` yang diberikan provider pada kartu profil yang tepat. Arahkan mapping publik sebagai **TCP → port internal inbound terkait**. Mapping panel tetap terpisah; maksimal **8 endpoint Xray unik total** dibagi bersama semua inbound (satu mapping panel memakai slot kesembilan). Port publik dapat berbeda dari port internal.
+Untuk membuat tautan klien, masukkan endpoint publik dalam format `host:port` pada kartu inbound yang sesuai. Endpoint harus dapat menjangkau port internal profil tersebut melalui konfigurasi jaringan Anda. Port endpoint dapat berbeda dari port internal.
 
-Panel menguji seluruh config gabungan menggunakan `xray run -test -config` sebelum penerapan. Jika pengujian atau restart gagal, helper memulihkan config lama. Mengubah mapping di panel tidak mengubah provider NAT secara otomatis; samakan tujuan lokalnya sendiri di UI provider.
+Panel menguji seluruh konfigurasi gabungan menggunakan `xray run -test -config` sebelum penerapan. Jika pengujian atau restart gagal, program bantu memulihkan konfigurasi lama. Perubahan endpoint di panel tidak mengubah firewall atau pengaturan jaringan di luar aplikasi.
 
-Routing yang sudah ada tetap mengirim UDP DNS tujuan port 53 ke outbound `direct` dan memblokir UDP lainnya. Inbound yang dikelola panel memakai TCP, sehingga tidak memerlukan mapping UDP.
+Routing yang sudah ada tetap mengirim UDP DNS tujuan port 53 ke outbound `direct` dan memblokir UDP lainnya. Inbound yang dikelola panel memakai TCP sehingga tidak memerlukan listener UDP.
 
 ## Update dan uninstall
 
-Perbarui panel dan Xray, pertahankan state/password/key/user, lalu validasi config sebelum restart:
+Perbarui panel dan Xray sambil mempertahankan data tersimpan, kata sandi, kunci, dan pengguna; validasi konfigurasi sebelum restart:
 
 ```bash
 XRAY_PANEL_REPO=https://github.com/GeraldZovka/xray-protocol-panel.git bash <(curl -fsSL https://raw.githubusercontent.com/GeraldZovka/xray-protocol-panel/main/install.sh) update
@@ -68,26 +68,26 @@ Uninstall **total** (meminta konfirmasi dengan mengetik `hapus-total`):
 XRAY_PANEL_REPO=https://github.com/GeraldZovka/xray-protocol-panel.git bash <(curl -fsSL https://raw.githubusercontent.com/GeraldZovka/xray-protocol-panel/main/install.sh) uninstall
 ```
 
-Perintah ini menghapus panel dan instalasi Xray melalui uninstaller resmi XTLS, termasuk config aktif, key REALITY, pengguna, state, sertifikat TLS yang dikelola panel, akun service, clone `/opt/xray-panel`, backup lokal yang dibuat panel, dan hanya aturan UFW yang memiliki komentar `xray-panel`. **Tidak ada state atau backup yang disimpan.** Jangan jalankan bila Anda ingin mempertahankan data atau memakai instalasi Xray yang sudah ada untuk layanan lain. Paket OS umum seperti `curl`, Git, Go, `sudo`, UFW, dan riwayat journald bersama sengaja tetap ada agar layanan lain di VPS tidak terganggu. Uninstaller resmi XTLS perlu diunduh; bila jaringan gagal, pembersihan dihentikan sebelum data panel dihapus.
+Perintah ini menghapus panel dan instalasi Xray melalui uninstaller resmi XTLS, termasuk konfigurasi aktif, kunci REALITY, pengguna, data panel, sertifikat TLS yang dikelola panel, akun layanan, salinan repositori di `/opt/xray-panel`, cadangan lokal yang dibuat panel, dan hanya aturan UFW yang memiliki komentar `xray-panel`. **Data dan cadangan tidak dipertahankan.** Jangan jalankan bila Anda ingin menyimpan data atau memakai instalasi Xray yang sudah ada untuk layanan lain. Paket OS umum seperti `curl`, Git, Go, `sudo`, UFW, dan riwayat journald bersama sengaja tetap ada agar layanan lain di VPS tidak terganggu. Uninstaller resmi XTLS perlu diunduh; bila jaringan gagal, pembersihan dihentikan sebelum data panel dihapus.
 
 ## Inbound dan tautan klien
 
 Profil utama **VLESS + TCP + REALITY + Vision** selalu dipertahankan. Admin dapat membuat banyak inbound tambahan **VLESS + TCP + REALITY + Vision**, **VLESS + XHTTP + REALITY**, **VMess**, atau **Shadowsocks**; port listener harus unik. Setiap profil VLESS mempunyai material REALITY sendiri dan XHTTP juga mempunyai path tersendiri. Menambah profil tidak mengganti UUID user atau key profil lain. Flow Vision hanya dipasang pada profil VLESS TCP.
 
-Setiap pengguna memperoleh tautan dan QR yang cocok dengan protocol/transport untuk setiap endpoint lengkap; endpoint numerik sementara belum menghasilkan tautan klien. URI hanya berisi material publik; private key REALITY tidak dikirim dalam API state, tautan, atau QR. File backup menyimpan private key setiap profil dan harus diperlakukan sebagai rahasia.
+Setiap pengguna memperoleh tautan dan QR yang sesuai dengan protokol/transport untuk setiap endpoint lengkap; endpoint numerik sementara belum menghasilkan tautan klien. URI hanya berisi material publik; kunci privat REALITY tidak dikirim melalui API status, tautan, atau QR. Berkas cadangan menyimpan kunci privat setiap profil dan harus diperlakukan sebagai rahasia.
 
 ## Panel dan fitur
 
-- Buka URL panel menggunakan hostname dan port publik yang ditetapkan provider untuk mapping panel, misalnya `http://HOST:PORT-PUBLIK-PROVIDER`.
-- Login memakai password admin. Password disimpan sebagai bcrypt; sesi cookie `HttpOnly`, `SameSite=Strict`, token CSRF, pemeriksaan Origin, dan rate limit 5 gagal/15 menit per IP.
-- Dashboard menunjukkan status/versi/uptime Xray, penggunaan CPU, RAM dan disk VPS, load, profil inbound, pengguna, serta log yang lebih mudah dibaca.
-- Setiap kartu inbound memiliki status, Edit, Start/Stop, dan Hapus; tombol Tambah profil dan Muat ulang berada pada tingkat halaman. Profil utama juga dapat dihapus. Semua listener boleh berhenti atau dihapus: daemon Xray tetap berjalan tanpa inbound dan profil baru masih dapat ditambahkan. Setiap perubahan config gabungan diuji sebelum diterapkan; listener lain tetap dipertahankan.
-- Pengguna dapat ditambah/nonaktifkan/aktifkan/dihapus langsung di Dashboard. Saat menambah pengguna, admin wajib memilih profil/protokol aktif yang akan diterima. Pengguna lama dan kredensial/tautannya dipertahankan; link/QR dibuat untuk profil yang ditetapkan dan hanya jika endpoint publik lengkap.
+- Buka panel melalui alamat host dan port yang Anda konfigurasi, misalnya `http://HOST:PORT`.
+- Masuk menggunakan kata sandi admin. Kata sandi disimpan dengan bcrypt; sesi memakai cookie `HttpOnly`, `SameSite=Strict`, token CSRF, pemeriksaan Origin, serta pembatasan lima percobaan gagal per 15 menit per IP.
+- Dashboard menunjukkan status, versi, dan waktu aktif Xray; penggunaan CPU, RAM, dan disk VPS; beban sistem; profil inbound; pengguna; serta log yang lebih mudah dibaca.
+- Setiap kartu inbound menampilkan status dan tombol Edit, Mulai, Hentikan, serta Hapus. Tombol Tambah profil dan Muat ulang berada pada tingkat halaman. Profil utama juga dapat dihapus. Semua listener boleh dihentikan atau dihapus: daemon Xray tetap berjalan tanpa inbound dan profil baru masih dapat ditambahkan. Setiap perubahan konfigurasi gabungan diuji sebelum diterapkan; listener lain tetap dipertahankan.
+- Pengguna dapat ditambah, dinonaktifkan, diaktifkan, atau dihapus langsung di Dashboard. Saat menambah pengguna, admin wajib memilih profil/protokol aktif yang akan diterima. Pengguna lama beserta kredensial dan tautannya dipertahankan; tautan/QR dibuat untuk profil yang dipilih hanya jika endpoint publiknya lengkap.
 - Profil utama VLESS TCP Vision serta inbound yang sudah ada dipertahankan. Profil tambahan mendukung VLESS TCP/XHTTP, VMess, dan Shadowsocks; setiap port internal harus unik.
-- Maksimal 8 endpoint Xray digabung untuk semua inbound (ditambah 1 slot provider panel). Endpoint tiap inbound diperiksa server-side. Xray menjalankan `xray run -test -config` pada seluruh config gabungan sebelum apply; jika uji atau restart gagal, helper root memulihkan config sebelumnya.
-- Pilihan tema, latar warna, dan gambar kustom berada di Pengaturan. Gambar serta pilihan latar disimpan pada state server privat dan digunakan bersama di semua perangkat; gambar mengisi seluruh latar dengan permukaan liquid-glass yang tetap menjaga keterbacaan.
-- Backup adalah file JSON yang mengandung key REALITY privat untuk tiap inbound, UUID pengguna, assignment profil, pengaturan latar, dan konfigurasi untuk pemulihan. File tetap rahasia: simpan terenkripsi dan jangan unggah ke repo.
-- Dukungan HTTPS: installer dapat membuat sertifikat self-signed bernama `xray-panel.local`, atau memakai cert/key yang Anda sediakan. Sertifikat self-signed tidak cocok dengan hostname provider dan browser akan menampilkan peringatan; untuk HTTPS tepercaya, sediakan sertifikat yang cocok dengan hostname panel atau gunakan reverse proxy TLS. Tanpa TLS, panel menampilkan peringatan HTTP.
+- Setiap inbound dapat memiliki endpoint publik sendiri untuk tautan/QR. Xray menjalankan `xray run -test -config` pada seluruh konfigurasi gabungan sebelum penerapan; jika uji atau restart gagal, helper root memulihkan konfigurasi sebelumnya.
+- Pilihan tema, warna latar, dan gambar khusus berada di Pengaturan. Gambar serta pilihan latar disimpan pada data privat di server dan digunakan bersama di semua perangkat; gambar memenuhi latar, sementara permukaan liquid-glass menjaga teks tetap terbaca.
+- Cadangan berupa berkas JSON berisi kunci REALITY privat tiap inbound, UUID pengguna, penetapan profil, pengaturan latar, dan konfigurasi untuk pemulihan. Berkas ini bersifat rahasia: simpan dalam keadaan terenkripsi dan jangan unggah ke repositori.
+- Dukungan HTTPS: installer dapat membuat sertifikat self-signed bernama `xray-panel.local`, atau memakai pasangan sertifikat/kunci yang Anda sediakan. Sertifikat self-signed tidak cocok dengan hostname panel sehingga browser akan menampilkan peringatan. Untuk HTTPS tepercaya, sediakan sertifikat yang cocok dengan hostname panel atau gunakan reverse proxy TLS. Tanpa TLS, panel menampilkan peringatan HTTP.
 
 ### Pengaturan TLS setelah install
 
@@ -102,9 +102,9 @@ Untuk reverse proxy HTTPS, bind panel ke loopback dengan mengubah `PANEL_ADDR=12
 ## Keamanan dan pilihan desain
 
 - Proses panel berjalan sebagai user Linux non-root `xray-panel`. Satu helper root yang root-owned hanya menerima aksi JSON tetap: apply config, status/log, start/stop/restart Xray, dan update resmi. Sudoers tidak memberi shell atau perintah bebas; helper juga menolak semua argumen command line.
-- Admin panel berwenang mengelola proxy dan meminta update Xray. Password minimal 8 byte (gunakan password unik yang lebih panjang) dan batasi akses jaringan ke port panel. Jangan expose panel HTTP ke Internet tanpa HTTPS.
+- Admin panel berwenang mengelola proxy dan meminta pembaruan Xray. Kata sandi minimal 8 byte; gunakan kata sandi unik yang lebih panjang dan batasi akses jaringan ke port panel. Jangan paparkan panel HTTP ke Internet tanpa HTTPS.
 - State panel (`/var/lib/xray-panel/state.json`), config Xray aktif, dan backup config diberi mode `0600`; direktori data panel `0700`. Config aktif ber-owner `root:root`; drop-in systemd memakai `LoadCredential` untuk menyerahkan salinan read-only hanya kepada service Xray non-root saat start, sehingga user `xray` tidak dapat membaca file sumber secara langsung. Ini memerlukan systemd 249 atau lebih baru (Ubuntu 22.04+).
-- Private key REALITY disimpan di state/config, tidak dikembalikan pada API biasa, link, QR, atau log UI. Backup yang diunduh memang berisi private key dan harus diperlakukan sebagai rahasia.
+- Kunci privat REALITY disimpan dalam data dan konfigurasi, tidak dikirim melalui API biasa, tautan, QR, atau log UI. Cadangan yang diunduh memang berisi kunci privat dan harus diperlakukan sebagai rahasia.
 - Tidak ada analytics, telemetry, CDN, atau API eksternal di runtime panel. Akses jaringan installer mencakup repo GitHub, GitHub untuk Xray, dan mirror Ubuntu untuk paket OS; permintaan update Xray dari helper mengunduh installer resmi GitHub. Xray sendiri tentu membuat koneksi keluar untuk meneruskan trafik TCP klien proxy.
 - Kuota/kedaluwarsa dan statistik trafik per-user belum disertakan. Xray Stats API tidak diaktifkan agar jejak pemakaian dan kompleksitas tetap minimal.
 
@@ -112,28 +112,28 @@ Untuk reverse proxy HTTPS, bind panel ke loopback dengan mengubah `PANEL_ADDR=12
 
 Lakukan lebih dulu pada VPS uji atau dengan backup yang dapat dipulihkan.
 
-1. **Prompt port:** jalankan tes non-destruktif `bash tests/install_prompts_test.sh`. Tes memastikan installer hanya meminta dua port internal, input kosong/invalid diminta ulang, kedua port internal harus berbeda, dan installer tidak menanyakan port publik, jumlah endpoint, atau daftar mapping. Pastikan total endpoint semua inbound menerima maksimal 8 (ditambah satu mapping panel, 9 total).
+1. **Prompt port:** jalankan tes non-destruktif `bash tests/install_prompts_test.sh`. Tes memastikan installer hanya meminta dua port internal, input kosong/invalid diminta ulang, kedua port internal harus berbeda, serta tidak meminta endpoint atau port eksternal.
 2. **Konflik port:** sebelum instal, pilih port internal yang sudah listen (misalnya `22` jika SSH menggunakannya), masukkan sebagai port internal panel, lalu jalankan installer. Pastikan installer menampilkan proses/port yang bentrok dan berhenti sebelum mengganti config.
 3. **Instalasi baru:** pastikan installer selesai, `systemctl status xray xray-panel`, dan `ss -ltnp` menampilkan port internal VLESS utama. Inbound tambahan dibuat di Dashboard setelah install.
-4. **NAT dan firewall:** konfirmasi setiap mapping TCP publik→port internal inbound yang tepat dan tes koneksi TCP. Akses panel melalui URL panel yang berlaku; uji juga dari jaringan berbeda jika memungkinkan.
+4. **Jaringan dan firewall:** pastikan endpoint publik mengarah ke layanan dan port internal yang tepat, lalu uji konektivitas TCP. Akses panel melalui URL yang berlaku; uji juga dari jaringan berbeda jika memungkinkan.
 5. **Login:** password benar masuk; salah 5 kali dibatasi; cookie panel memiliki `HttpOnly`/`SameSite=Strict`. Jika HTTP, peringatan keamanan terlihat.
 6. **Pengguna dan QR:** tambah user, salin tautan profil, pindai QR; pastikan private key tidak ada di link, QR, atau log. Pada staging, buat beberapa inbound VLESS TCP/XHTTP pada port berbeda; pastikan config gabungan benar, flow Vision hanya pada TCP, key REALITY berbeda, serta tiap link memakai endpoint yang sesuai.
 7. **Nonaktif/hapus user:** nonaktifkan user dan pastikan koneksi barunya gagal, aktifkan kembali lalu uji; hapus user dan pastikan hilang dari daftar/config.
 8. **Perubahan gagal:** uji path XHTTP yang tidak valid, simpan, pastikan UI menunjukkan error dan konfigurasi sebelumnya tetap bekerja. Untuk uji rollback restart, lakukan hanya di staging dengan port internal yang sengaja bentrok.
-9. **Banyak profil:** pada VPS staging, uji Start/Stop per inbound, hapus semua profil satu per satu melalui konfirmasi, pastikan daemon Xray tetap aktif dengan daftar inbound kosong, lalu tambahkan profil baru dan pastikan layanan dapat digunakan lagi. Mapping provider tidak diubah oleh panel.
+9. **Banyak profil:** pada VPS staging, uji Start/Stop per inbound, hapus semua profil satu per satu melalui konfirmasi, pastikan daemon Xray tetap aktif dengan daftar inbound kosong, lalu tambahkan profil baru dan pastikan layanan dapat digunakan lagi. Pengaturan jaringan di luar panel tidak diubah oleh aplikasi.
 10. **Backup/restore:** unduh backup, simpan secara aman, ubah user/settings, restore backup dan pastikan config aktif dipulihkan. Pastikan restore tidak mengganti password admin yang sedang dipakai.
 11. **Password/TLS:** ubah password admin, pastikan sesi lama harus login ulang; bila TLS diaktifkan, buka `https://HOST:PORT` dan verifikasi bahwa browser menunjukkan TLS (sertifikat self-signed akan tetap diberi warning).
 12. **Update/uninstall:** pada staging, uji update dan pastikan pengguna tetap ada. Untuk uninstall total, pastikan konfirmasi `hapus-total` menjelaskan bahwa Xray, konfigurasi, key, pengguna, sertifikat, backup, dan aturan firewall bertanda aplikasi akan dihapus.
 
 ## Troubleshooting
 
-- **Panel tidak dapat dibuka:** periksa `systemctl status xray-panel`, `journalctl -u xray-panel -n 100 --no-pager`, `ss -ltnp`, UFW, lalu pastikan mapping publik panel mengarah ke port internal yang benar.
+- **Panel tidak dapat dibuka:** periksa `systemctl status xray-panel`, `journalctl -u xray-panel -n 100 --no-pager`, `ss -ltnp`, UFW, serta alamat dan port yang digunakan untuk mengakses panel.
 - **Xray gagal restart / port conflict:** periksa `systemctl status xray`, `journalctl -u xray -n 100 --no-pager`, dan `ss -ltnp`. Perubahan melalui panel mengembalikan config sebelumnya saat restart gagal. Periksa pesan error yang ditampilkan UI.
-- **Tidak ada koneksi klien:** pastikan hostname dan port publik yang ditetapkan provider sudah dimasukkan sebagai endpoint di Pengaturan dan benar pada link, mapping provider TCP aktif menuju port internal Xray, UFW sesuai, UUID/REALITY public key/short ID benar, dan SNI/dest mendukung TLS 1.3. Pastikan klien memakai transport yang sedang dipilih.
+- **Tidak ada koneksi klien:** pastikan endpoint `host:port` pada profil sesuai dengan link, konektivitas jaringan mencapai port internal Xray, aturan firewall sesuai, UUID/REALITY public key/short ID benar, dan SNI/dest mendukung TLS 1.3. Pastikan klien memakai transport yang sedang dipilih.
 - **Update gagal:** pastikan VPS dapat mengakses GitHub dan mirror Ubuntu, ruang disk cukup, lalu jalankan `install.sh update` lagi setelah memeriksa status Xray. Installer membuat ulang config dari state, menjalankan uji Xray, menyimpan backup, menerapkan perubahan, dan me-rollback bila restart gagal.
 - **Lupa password:** tidak ada mekanisme reset dari UI. Setelah login shell root ke VPS, gunakan prosedur reset yang Anda audit sendiri atau backup/restore; jangan mengedit state sembarangan karena memuat key rahasia.
 - **Panel tetap HTTP:** file TLS harus pasangan cert/key yang benar, terbaca oleh user `xray-panel`, dan tercantum di `/etc/xray-panel.env`; lihat log service setelah restart.
 
 ## Verifikasi yang dilakukan pada paket sumber
 
-Tes prompt installer non-destruktif (`bash tests/install_prompts_test.sh`) dan unit test Go mencakup banyak inbound VLESS TCP/XHTTP, profil protokol berulang, status aktif/nonaktif, port unik, link klien, batas mapping gabungan, routing DNS/UDP, dan pembacaan state legacy. JavaScript UI juga diperiksa syntax-nya. Pada penerapan, helper menguji config lengkap dengan `xray run -test -config` menggunakan versi Xray terpasang sebelum apply dan memulihkan config lama jika gagal. Rincian kombinasi dan batasannya ada di [panduan inbound multi-profil](docs/vless-profiles.md).
+Tes prompt installer non-destruktif (`bash tests/install_prompts_test.sh`) dan unit test Go mencakup banyak inbound VLESS TCP/XHTTP, profil protokol berulang, status aktif/nonaktif, port unik, link klien, validasi endpoint dan konfigurasi gabungan, routing DNS/UDP, dan pembacaan state legacy. JavaScript UI juga diperiksa syntax-nya. Pada penerapan, helper menguji config lengkap dengan `xray run -test -config` menggunakan versi Xray terpasang sebelum apply dan memulihkan config lama jika gagal. Rincian kombinasi dan batasannya ada di [panduan inbound multi-profil](docs/vless-profiles.md).

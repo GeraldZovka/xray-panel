@@ -64,11 +64,11 @@ func TestBuildTCPConfigAndVLESSLink(t *testing.T) {
 	}
 }
 
-func TestNATMappingsGenerateOneLinkPerEndpoint(t *testing.T) {
+func TestPublicEndpointsGenerateOneLinkPerEndpoint(t *testing.T) {
 	s := testState(t)
 	s.Settings.NATMappings = []string{
-		"vectis-nat-1-20151-ybh.vps-eu1.sumopod.my.id:20151",
-		"vectis-nat-1-20152-zxf.vps-eu1.sumopod.my.id:20152",
+		"edge-one.example.net:20151",
+		"edge-two.example.net:20152",
 	}
 	if err := validateSettings(s.Settings); err != nil {
 		t.Fatal(err)
@@ -87,29 +87,29 @@ func TestNATMappingsGenerateOneLinkPerEndpoint(t *testing.T) {
 	}
 }
 
-func TestNATMappingsLimitAndLegacyCompatibility(t *testing.T) {
+func TestPublicEndpointCapacityAndLegacyCompatibility(t *testing.T) {
 	s := testState(t)
 	s.Settings.NATMappings = nil // Existing schema-1 states only store publicHost/publicPort.
 	if err := validateSettings(s.Settings); err != nil {
 		t.Fatalf("legacy single-endpoint state rejected: %v", err)
 	}
 	for i := 0; i < 8; i++ {
-		s.Settings.NATMappings = append(s.Settings.NATMappings, "nat-"+strconv.Itoa(i)+".example.net:"+strconv.Itoa(20151+i))
+		s.Settings.NATMappings = append(s.Settings.NATMappings, "edge-"+strconv.Itoa(i)+".example.net:"+strconv.Itoa(20151+i))
 	}
 	if err := validateSettings(s.Settings); err != nil {
-		t.Fatalf("eight Xray mappings plus one panel mapping rejected: %v", err)
+		t.Fatalf("endpoint set within the supported capacity rejected: %v", err)
 	}
-	s.Settings.NATMappings = append(s.Settings.NATMappings, "nat-9.example.net:20159")
+	s.Settings.NATMappings = append(s.Settings.NATMappings, "edge-extra.example.net:20159")
 	if err := validateSettings(s.Settings); err == nil {
-		t.Fatal("accepted nine Xray mappings plus the panel mapping (10 total)")
+		t.Fatal("accepted endpoints beyond the supported capacity")
 	}
-	s.Settings.NATMappings = []string{"nat.example.net:20151", "nat.example.net:20151"}
+	s.Settings.NATMappings = []string{"edge.example.net:20151", "edge.example.net:20151"}
 	if err := validateSettings(s.Settings); err == nil {
-		t.Fatal("accepted duplicate NAT mapping")
+		t.Fatal("accepted duplicate public endpoint")
 	}
 }
 
-func TestPendingPublicPortsBecomeLinksAfterProviderHostnameIsEntered(t *testing.T) {
+func TestPendingPublicPortsBecomeLinksAfterHostnameIsEntered(t *testing.T) {
 	s := testState(t)
 	s.Settings.PublicHost = ""
 	s.Settings.PublicPort = 20151
@@ -121,15 +121,15 @@ func TestPendingPublicPortsBecomeLinksAfterProviderHostnameIsEntered(t *testing.
 		t.Fatalf("pending ports unexpectedly produced links: %+v", links)
 	}
 	if _, err := buildXrayConfig(s); err != nil {
-		t.Fatalf("Xray config rejected before provider hostnames are available: %v", err)
+		t.Fatalf("Xray config rejected before endpoint hostnames are available: %v", err)
 	}
 
-	s.Settings.NATMappings = []string{"20151", "nat-two.example.net:20152"}
+	s.Settings.NATMappings = []string{"20151", "edge-two.example.net:20152"}
 	if err := validateSettings(s.Settings); err != nil {
-		t.Fatalf("provider hostname entry rejected: %v", err)
+		t.Fatalf("hostname entry rejected: %v", err)
 	}
 	links := makeVLESSLinks(s, s.Users[0])
-	if len(links) != 1 || links[0].Address != "nat-two.example.net:20152" || !strings.Contains(links[0].Link, "@nat-two.example.net:20152?") {
+	if len(links) != 1 || links[0].Address != "edge-two.example.net:20152" || !strings.Contains(links[0].Link, "@edge-two.example.net:20152?") {
 		t.Fatalf("completed endpoint did not generate exactly its link: %+v", links)
 	}
 
@@ -137,7 +137,7 @@ func TestPendingPublicPortsBecomeLinksAfterProviderHostnameIsEntered(t *testing.
 	if err := validateSettings(s.Settings); err == nil {
 		t.Fatal("accepted duplicate pending public ports")
 	}
-	s.Settings.NATMappings = []string{"nat-one.example.net:20151", "nat-two.example.net:20151"}
+	s.Settings.NATMappings = []string{"edge-one.example.net:20151", "edge-two.example.net:20151"}
 	if err := validateSettings(s.Settings); err != nil {
 		t.Fatalf("rejected legacy-compatible distinct hostnames on the same port: %v", err)
 	}
@@ -146,28 +146,28 @@ func TestPendingPublicPortsBecomeLinksAfterProviderHostnameIsEntered(t *testing.
 		t.Fatal("accepted an out-of-range pending public port")
 	}
 	s.Settings.InternalPort = 20151
-	s.Settings.NATMappings = []string{"nat-one.example.net:20151"}
+	s.Settings.NATMappings = []string{"edge-one.example.net:20151"}
 	if err := validateSettings(s.Settings); err != nil {
-		t.Fatalf("provider public port matching the internal port was rejected: %v", err)
+		t.Fatalf("public port matching the internal port was rejected: %v", err)
 	}
 }
-func TestDefaultStateCanWaitForProviderEndpoint(t *testing.T) {
+func TestDefaultStateCanWaitForEndpoint(t *testing.T) {
 	s, err := makeDefaultState(20151, 443, "bcrypt-hash-placeholder")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if s.Settings.PublicHost != "" || s.Settings.PublicPort != 0 || len(s.Settings.NATMappings) != 0 {
-		t.Fatalf("default state invented a provider endpoint: %+v", s.Settings)
+		t.Fatalf("default state invented a external endpoint: %+v", s.Settings)
 	}
 	if err := validateSettings(s.Settings); err != nil {
 		t.Fatalf("empty-endpoint default state is invalid: %v", err)
 	}
 	if _, err := buildXrayConfig(s); err != nil {
-		t.Fatalf("Xray config rejected before provider endpoint is available: %v", err)
+		t.Fatalf("Xray config rejected before external endpoint is available: %v", err)
 	}
-	s.Settings.NATMappings = []string{"provider.example.net:20152"}
+	s.Settings.NATMappings = []string{"edge.example.net:20152"}
 	if err := validateSettings(s.Settings); err != nil {
-		t.Fatalf("provider endpoint entered later in panel settings was rejected: %v", err)
+		t.Fatalf("external endpoint entered later in panel settings was rejected: %v", err)
 	}
 }
 func TestDefaultStateRejectsCollidingInternalListeners(t *testing.T) {
@@ -482,7 +482,7 @@ func TestVLESSVisionAndXHTTPREALITYRunAsSeparateInbounds(t *testing.T) {
 	}
 	links := makeUserLinks(s, s.Users[0])
 	if len(links) != 2 || links[1].Address != "xhttp.example.net:20252" || links[1].InboundID != inbound.ID {
-		t.Fatalf("completed XHTTP link missing for the provider endpoint")
+		t.Fatalf("completed XHTTP link missing for the external endpoint")
 	}
 	if !strings.HasPrefix(links[1].Link, "vless://"+s.Users[0].UUID+"@xhttp.example.net:20252?") || !strings.Contains(links[1].Link, "type=xhttp") || !strings.Contains(links[1].Link, "security=reality") || strings.Contains(links[1].Link, inbound.RealityPrivateKey) {
 		t.Fatal("generated XHTTP client link is malformed or exposes a private key")

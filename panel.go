@@ -827,7 +827,7 @@ func (s *server) handleQR(w http.ResponseWriter, r *http.Request) {
 	if value := r.URL.Query().Get("mapping"); value != "" {
 		parsed, err := strconv.Atoi(value)
 		if err != nil || parsed < 0 {
-			http.Error(w, "mapping NAT tidak valid", http.StatusBadRequest)
+			http.Error(w, "endpoint publik tidak valid", http.StatusBadRequest)
 			return
 		}
 		mappingIndex = parsed
@@ -851,7 +851,7 @@ func (s *server) handleQR(w http.ResponseWriter, r *http.Request) {
 				_, _ = w.Write(png)
 				return
 			}
-			http.Error(w, "mapping NAT tidak ditemukan", http.StatusBadRequest)
+			http.Error(w, "endpoint publik tidak ditemukan", http.StatusBadRequest)
 			return
 		}
 	}
@@ -1206,7 +1206,7 @@ func (s *server) updateInboundMappings(raw map[string]json.RawMessage) error {
 		NATMappings []string `json:"natMappings"`
 	}
 	if err := json.Unmarshal(raw["inbound"], &in); err != nil || in.ID == "" {
-		return errors.New("pengaturan mapping inbound tidak valid")
+		return errors.New("pengaturan endpoint inbound tidak valid")
 	}
 	for i := range in.NATMappings {
 		in.NATMappings[i] = strings.TrimSpace(in.NATMappings[i])

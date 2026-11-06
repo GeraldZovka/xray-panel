@@ -153,20 +153,20 @@ func validateHostname(s string) error {
 
 func parseNATMapping(endpoint string) (string, int, error) {
 	if endpoint != strings.TrimSpace(endpoint) || len(endpoint) > 260 {
-		return "", 0, errors.New("mapping NAT harus berupa host:port tanpa spasi di tepi")
+		return "", 0, errors.New("endpoint publik harus berupa host:port tanpa spasi di tepi")
 	}
 	host, port, err := net.SplitHostPort(endpoint)
 	if err != nil || host == "" {
-		return "", 0, errors.New("mapping NAT harus berupa host:port; IPv6 harus memakai tanda kurung siku")
+		return "", 0, errors.New("endpoint publik harus berupa host:port; IPv6 harus memakai tanda kurung siku")
 	}
 	if net.ParseIP(host) == nil {
 		if err := validateHostname(host); err != nil {
-			return "", 0, fmt.Errorf("host mapping NAT tidak valid: %w", err)
+			return "", 0, fmt.Errorf("host endpoint publik tidak valid: %w", err)
 		}
 	}
 	p, err := strconv.Atoi(port)
 	if err != nil || !validPort(p) {
-		return "", 0, errors.New("port mapping NAT harus antara 1 dan 65535")
+		return "", 0, errors.New("port endpoint publik harus antara 1 dan 65535")
 	}
 	return host, p, nil
 }
@@ -177,7 +177,7 @@ func parseNATMappingOrPort(endpoint string) (string, int, error) {
 		if err == nil && validPort(p) {
 			return "", p, nil
 		}
-		return "", 0, errors.New("port mapping NAT harus antara 1 dan 65535")
+		return "", 0, errors.New("port endpoint publik harus antara 1 dan 65535")
 	}
 	return parseNATMapping(endpoint)
 }
@@ -214,7 +214,7 @@ func validateSettings(s Settings) error {
 	}
 	mappings := effectiveNATMappings(s)
 	if len(mappings) > 8 {
-		return errors.New("mapping NAT Xray maksimal 8 endpoint; satu dari 9 mapping total dicadangkan untuk panel")
+		return errors.New("endpoint publik Xray melampaui batas kapasitas yang tersedia")
 	}
 	seenMappings := make(map[string]bool, len(mappings))
 	for _, mapping := range mappings {
@@ -224,7 +224,7 @@ func validateSettings(s Settings) error {
 		}
 		key := strings.ToLower(host) + ":" + strconv.Itoa(port)
 		if seenMappings[key] {
-			return errors.New("mapping NAT duplikat")
+			return errors.New("endpoint publik duplikat")
 		}
 		seenMappings[key] = true
 	}
@@ -332,7 +332,7 @@ func validateManagedInbounds(st appState) error {
 		}
 	}
 	if mappingCount > 8 {
-		return errors.New("maksimal 8 mapping Xray; satu dari 9 mapping total dicadangkan untuk panel")
+		return errors.New("endpoint Xray melampaui batas kapasitas yang tersedia")
 	}
 	for _, user := range st.Users {
 		assigned := make(map[string]bool, len(user.AssignedInboundIDs))
@@ -386,7 +386,7 @@ func addValidatedMapping(seen map[string]bool, mapping string) error {
 	}
 	key := strings.ToLower(host) + ":" + strconv.Itoa(port)
 	if seen[key] {
-		return errors.New("mapping NAT duplikat")
+		return errors.New("endpoint publik duplikat")
 	}
 	seen[key] = true
 	return nil

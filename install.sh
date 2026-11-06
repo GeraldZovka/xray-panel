@@ -226,7 +226,7 @@ install_fresh(){
     say 'Update selesai; konfigurasi, pengguna, key dan password dipertahankan.'
     return
   fi
-  say 'Pengaturan awal. Masukkan dua port internal manual; hostname dan port publik panel serta endpoint Xray ditetapkan provider setelah pemetaan NAT tersedia.'
+  say 'Pengaturan awal. Masukkan dua port internal: untuk panel dan Xray.'
   ask_install_ports
   ask_password
   build_app
@@ -245,14 +245,14 @@ install_fresh(){
   local scheme=http
   [[ -z $TLS_CERT ]] || scheme=https
   say 'Instalasi selesai.'
-  printf 'Panel: %s://<hostname-panel>:<port-publik-acak-dari-provider>\n' "$scheme"
-  printf 'Mapping panel provider: gunakan hostname:port publik yang provider tetapkan -> %s/TCP.\n' "$PANEL_INTERNAL"
-  printf 'Port internal Xray: %s/TCP; masukkan hostname:port publik yang provider tetapkan untuk Xray di Pengaturan panel setelah detail mapping tersedia.\n' "$XRAY_INTERNAL"
-  printf 'Batas provider: 1 mapping panel + maksimal 8 endpoint Xray (9 total).\n'
+  printf 'Panel: %s://<HOST>:<PORT>\n' "$scheme"
+  printf 'Port internal panel: %s/TCP.\n' "$PANEL_INTERNAL"
+  printf 'Port internal Xray: %s/TCP; jika menggunakan endpoint publik, masukkan host:port di kartu profil terkait pada Dashboard.\n' "$XRAY_INTERNAL"
+
   printf 'Mode awal: VLESS + TCP + REALITY + Vision. UDP DNS port 53 langsung; UDP lainnya diblokir.\n'
   printf 'Port UFW internal yang diizinkan: %s/TCP dan %s/TCP (jika UFW aktif).\n' "$PANEL_INTERNAL" "$XRAY_INTERNAL"
-  printf 'Periksa provider NAT: mapping panel ke %s/TCP dan setiap endpoint Xray ke %s/TCP; provider menetapkan hostname serta port publik acak, gunakan TCP.\n' "$PANEL_INTERNAL" "$XRAY_INTERNAL"
-  if [[ -z $TLS_CERT ]]; then printf 'PERINGATAN: panel masih HTTP. Gunakan reverse proxy HTTPS atau sertifikat yang cocok dengan hostname panel dari provider.\n'; fi
+
+  if [[ -z $TLS_CERT ]]; then printf 'PERINGATAN: panel masih HTTP. Gunakan reverse proxy HTTPS atau sertifikat yang cocok dengan hostname yang digunakan untuk panel.\n'; fi
 }
 update_existing(){
   require_root;check_platform;check_repo_url
