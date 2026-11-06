@@ -402,14 +402,22 @@ func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if r.Method != http.MethodGet {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		methodNotAllowed(w)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.tpl.Execute(w, nil); err != nil {
+	var page bytes.Buffer
+	if err := s.tpl.Execute(&page, nil); err != nil {
 		log.Printf("template error: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
 	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Length", strconv.Itoa(page.Len()))
+	if r.Method == http.MethodHead {
+		return
+	}
+	_, _ = w.Write(page.Bytes())
 }
 func primaryInboundName(settings Settings) string {
 	if settings.Name != "" {

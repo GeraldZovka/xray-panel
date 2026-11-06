@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"html/template"
 	"image"
 	"image/color"
 	"image/png"
@@ -11,9 +12,44 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 )
+
+func TestHandleIndexSupportsGetAndHead(t *testing.T) {
+	const page = "<main>Panel</main>"
+	tpl, err := template.New("index").Parse(page)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &server{tpl: tpl}
+
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		t.Run(method, func(t *testing.T) {
+			req := httptest.NewRequest(method, "http://panel.example/", nil)
+			response := httptest.NewRecorder()
+			s.handleIndex(response, req)
+
+			if response.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
+			}
+			if got := response.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
+				t.Fatalf("content type = %q, want HTML", got)
+			}
+			if got := response.Header().Get("Content-Length"); got != strconv.Itoa(len(page)) {
+				t.Fatalf("content length = %q, want %d", got, len(page))
+			}
+			wantBody := page
+			if method == http.MethodHead {
+				wantBody = ""
+			}
+			if got := response.Body.String(); got != wantBody {
+				t.Fatalf("body = %q, want %q", got, wantBody)
+			}
+		})
+	}
+}
 
 func TestParseAddInboundRequestDecodesAndValidatesPort(t *testing.T) {
 	valid := map[string]json.RawMessage{
