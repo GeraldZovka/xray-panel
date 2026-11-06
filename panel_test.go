@@ -116,6 +116,20 @@ func testHelperPath(t *testing.T) {
 	t.Setenv("PANEL_ADDR", "")
 }
 
+func testCapturingHelper(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "helper")
+	capturePath := filepath.Join(dir, "helper-request.json")
+	script := []byte("#!/bin/sh\ncat > \"" + capturePath + "\"\nprintf '{\"ok\":true}\\n'\n")
+	if err := os.WriteFile(path, script, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XRAY_PANEL_HELPER", path)
+	t.Setenv("PANEL_ADDR", "")
+	return capturePath
+}
+
 func testPanelServer(t *testing.T, st appState) *server {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "state.json")
@@ -166,6 +180,121 @@ func TestDeleteEveryInboundThenAddAnother(t *testing.T) {
 	}
 	if len(s.state.Inbounds) != 1 || !s.state.Inbounds[0].Enabled {
 		t.Fatalf("new profile was not created and enabled: %#v", s.state.Inbounds)
+	}
+}
+
+func TestReloadInboundReappliesCurrentCombinedConfigWithoutChangingState(t *testing.T) {
+	capturePath := testCapturingHelper(t)
+	st := testState(t)
+	selected, err := newVLESSXHTTPInbound("selected01", 20152, st.Settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected.Name = "Selected profile"
+	selected.Mode = "xhttp"
+	selected.XHTTPPath = "/selected-current"
+	other, err := newVLESSXHTTPInbound("other001", 20153, st.Settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other.Mode = "tcp"
+	disabled, err := newVLESSXHTTPInbound("disabled1", 20154, st.Settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabled.Enabled = false
+	st.Inbounds = []ManagedInbound{selected, other, disabled}
+	s := testPanelServer(t, st)
+	before, err := json.Marshal(s.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := s.reloadInbound(map[string]json.RawMessage{"id": json.RawMessage(`"selected01"`)})
+	if err != nil {
+		t.Fatalf("reload selected profile: %v", err)
+	}
+	if result.(map[string]bool)["ok"] != true {
+		t.Fatalf("reload result = %#v", result)
+	}
+
+	requestBytes, err := os.ReadFile(capturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request helperRequest
+	if err := json.Unmarshal(requestBytes, &request); err != nil {
+		t.Fatal(err)
+	}
+	if request.Action != "apply" {
+		t.Fatalf("helper action = %q, want apply", request.Action)
+	}
+	var config struct {
+		Inbounds []struct {
+			Port           int    `json:"port"`
+			Tag            string `json:"tag"`
+			StreamSettings struct {
+				XHTTPSettings struct {
+					Path string `json:"path"`
+				} `json:"xhttpSettings"`
+			} `json:"streamSettings"`
+		} `json:"inbounds"`
+	}
+	if err := json.Unmarshal([]byte(request.Config), &config); err != nil {
+		t.Fatal(err)
+	}
+	ports := make(map[int]bool, len(config.Inbounds))
+	selectedPath := ""
+	for _, inbound := range config.Inbounds {
+		ports[inbound.Port] = true
+		if inbound.Tag == "managed-selected01" {
+			selectedPath = inbound.StreamSettings.XHTTPSettings.Path
+		}
+	}
+	if len(config.Inbounds) != 3 || !ports[443] || !ports[20152] || !ports[20153] || ports[20154] {
+		t.Fatalf("reload config did not preserve all active profiles while excluding stopped ones: ports=%v", ports)
+	}
+	if selectedPath != "/selected-current" {
+		t.Fatalf("selected profile config path = %q, want current value", selectedPath)
+	}
+	after, err := json.Marshal(s.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("reload modified the saved panel state")
+	}
+}
+
+func TestReloadInboundRejectsStoppedOrMissingProfile(t *testing.T) {
+	testHelperPath(t)
+	st := testState(t)
+	st.Inbounds = []ManagedInbound{{ID: "stopped1", Name: "Stopped", Enabled: false, Protocol: "vmess", InternalPort: 20152}}
+	s := testPanelServer(t, st)
+	if _, err := s.reloadInbound(map[string]json.RawMessage{"id": json.RawMessage(`"stopped1"`)}); err == nil || err.Error() != "profil inbound berhenti; aktifkan sebelum memuat ulang" {
+		t.Fatalf("reload stopped profile error = %v", err)
+	}
+	if _, err := s.reloadInbound(map[string]json.RawMessage{"id": json.RawMessage(`"missing1"`)}); err == nil || err.Error() != "inbound tidak ditemukan" {
+		t.Fatalf("reload missing profile error = %v", err)
+	}
+}
+
+func TestReloadInboundActionRouteUsesAuthenticatedSession(t *testing.T) {
+	testHelperPath(t)
+	s := testPanelServer(t, testState(t))
+	s.sessions["test-session"] = session{CSRF: "csrf-token", Expires: time.Now().Add(time.Hour)}
+	req := httptest.NewRequest(http.MethodPost, "http://panel.example/api/action", bytes.NewBufferString(`{"action":"reloadInbound","id":"primary"}`))
+	req.Header.Set("Origin", "http://panel.example")
+	req.Header.Set("X-CSRF-Token", "csrf-token")
+	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: "test-session"})
+	response := httptest.NewRecorder()
+	s.handleAction(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("reload action status=%d body=%s", response.Code, response.Body.String())
+	}
+	var result map[string]bool
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || !result["ok"] {
+		t.Fatalf("reload action response=%v err=%v", result, err)
 	}
 }
 

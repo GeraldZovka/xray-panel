@@ -28,7 +28,10 @@ assert.match(html, /@supports\(height:100lvh\)\{#backdrop\{height:100lvh\}\}/, '
 assert.match(html, /rgba\(255,255,255,\.62\)/, 'custom glass surface stays visibly transparent');
 assert.match(html, /backdrop-filter:blur\(16px\) saturate\(145%\)/, 'custom mode uses visible liquid-glass styling');
 assert.match(html, /id="addProfileButton"/, 'page-level add profile action is present');
-assert.match(html, /id="refreshButton"/, 'page-level refresh action is present');
+assert.match(html, /id="addInboundDialog"/, 'top-level add profile opens a dialog with the existing form');
+assert.doesNotMatch(html, /id="addInboundPanel"|id="refreshButton"/, 'lower add accordion and page-level refresh control are removed');
+assert.match(script, /action:'reloadInbound',id:item\.id/, 'each inbound card can request a profile reload');
+assert.match(script, /semua koneksi klien pada seluruh profil aktif dapat terputus sesaat/i, 'reload confirmation warns that the shared Xray daemon can interrupt all active profiles');
 assert.match(html, /id="newUserInbound" required/, 'new-user profile selection is mandatory');
 assert.match(script, /action:'addUser',name,inboundId/, 'new user request sends its selected profile');
 assert.match(html, /© 2026 Gerald Zovka[\s\S]*?Repositori proyek/, 'footer uses a repository credit when no LICENSE file exists');

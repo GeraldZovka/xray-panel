@@ -587,6 +587,8 @@ func (s *server) handleAction(w http.ResponseWriter, r *http.Request) {
 		err = s.updateInbound(raw)
 	case "toggleInbound":
 		err = s.toggleInbound(raw)
+	case "reloadInbound":
+		result, err = s.reloadInbound(raw)
 	case "inboundMappings":
 		err = s.updateInboundMappings(raw)
 	case "changePassword":
@@ -1264,6 +1266,47 @@ func (s *server) serviceAction(raw map[string]json.RawMessage) (any, error) {
 	}
 	if !resp.OK {
 		return nil, errors.New(resp.Error)
+	}
+	return map[string]bool{"ok": true}, nil
+}
+func (s *server) reloadInbound(raw map[string]json.RawMessage) (any, error) {
+	id, err := requiredString(raw, "id")
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st := s.state
+	found, enabled := false, false
+	if id == "primary" {
+		found, enabled = !st.PrimaryDeleted, st.Settings.Enabled
+	} else {
+		for _, inbound := range st.Inbounds {
+			if inbound.ID == id {
+				found, enabled = true, inbound.Enabled
+				break
+			}
+		}
+	}
+	if !found {
+		return nil, errors.New("inbound tidak ditemukan")
+	}
+	if !enabled {
+		return nil, errors.New("profil inbound berhenti; aktifkan sebelum memuat ulang")
+	}
+	if err := validateStoredState(st); err != nil {
+		return nil, err
+	}
+	cfg, err := buildXrayConfig(st)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := callHelper(helperRequest{Action: "apply", Config: string(cfg)})
+	if err != nil {
+		return nil, errors.New(redactState(err.Error(), st))
+	}
+	if !resp.OK {
+		return nil, errors.New(redactState(resp.Error, st))
 	}
 	return map[string]bool{"ok": true}, nil
 }
