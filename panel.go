@@ -3,14 +3,21 @@ package main
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"html/template"
+	"image"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
 	"log"
+	"mime"
 	"net"
 	"net/http"
 	"os"
@@ -29,7 +36,8 @@ const (
 	defaultStatePath      = "/var/lib/xray-panel/state.json"
 	sessionCookie         = "xray_panel_session"
 	sessionLifetime       = 12 * time.Hour
-	maxBodyBytes          = 2 << 20
+	maxBodyBytes          = 8 << 20
+	maxBackgroundBytes    = 5 << 20
 	minAdminPasswordBytes = 8
 	maxAdminPasswordBytes = 1024
 )
@@ -77,18 +85,21 @@ type publicInbound struct {
 	XHTTPPath    string   `json:"xhttpPath"`
 }
 type publicState struct {
-	CSRF     string          `json:"csrf"`
-	Settings Settings        `json:"settings"`
-	Inbounds []publicInbound `json:"inbounds"`
-	Users    []publicUser    `json:"users"`
-	Running  bool            `json:"running"`
-	Version  string          `json:"version"`
-	Uptime   string          `json:"uptime"`
-	CPU      string          `json:"cpu"`
-	Load     string          `json:"load"`
-	RAM      string          `json:"ram"`
-	Logs     string          `json:"logs"`
-	HTTPS    bool            `json:"https"`
+	CSRF               string          `json:"csrf"`
+	Settings           Settings        `json:"settings"`
+	Inbounds           []publicInbound `json:"inbounds"`
+	Users              []publicUser    `json:"users"`
+	Running            bool            `json:"running"`
+	Version            string          `json:"version"`
+	Uptime             string          `json:"uptime"`
+	CPU                string          `json:"cpu"`
+	Load               string          `json:"load"`
+	RAM                string          `json:"ram"`
+	Disk               string          `json:"disk"`
+	Logs               string          `json:"logs"`
+	HTTPS              bool            `json:"https"`
+	BackgroundMode     string          `json:"backgroundMode"`
+	BackgroundRevision string          `json:"backgroundRevision"`
 }
 type helperRequest struct {
 	Action    string `json:"action"`
@@ -104,6 +115,7 @@ type helperResponse struct {
 	CPU     string `json:"cpu,omitempty"`
 	Load    string `json:"load,omitempty"`
 	RAM     string `json:"ram,omitempty"`
+	Disk    string `json:"disk,omitempty"`
 	Logs    string `json:"logs,omitempty"`
 }
 
@@ -112,6 +124,9 @@ type backupFile struct {
 	Settings          Settings         `json:"settings"`
 	Users             []User           `json:"users"`
 	Inbounds          []ManagedInbound `json:"inbounds,omitempty"`
+	PrimaryDeleted    bool             `json:"primaryDeleted,omitempty"`
+	BackgroundMode    string           `json:"backgroundMode,omitempty"`
+	BackgroundImage   []byte           `json:"backgroundImage,omitempty"`
 	RealityPrivateKey string           `json:"realityPrivateKey"`
 	RealityPublicKey  string           `json:"realityPublicKey"`
 	RealityShortID    string           `json:"realityShortId"`
@@ -153,6 +168,7 @@ func run() error {
 	mux.HandleFunc("/api/logout", s.handleLogout)
 	mux.HandleFunc("/api/state", s.handleState)
 	mux.HandleFunc("/api/action", s.handleAction)
+	mux.HandleFunc("/api/background", s.handleBackground)
 	mux.HandleFunc("/api/qr", s.handleQR)
 	mux.HandleFunc("/api/backup", s.handleBackup)
 	wrapped := securityHeaders(mux)
@@ -330,6 +346,21 @@ func validateStoredState(st appState) error {
 	if st.Schema != 1 || st.AdminHash == "" {
 		return errors.New("versi state atau hash admin tidak ditemukan")
 	}
+	if st.BackgroundMode != "" && st.BackgroundMode != "neutral" && st.BackgroundMode != "sky" && st.BackgroundMode != "mint" && st.BackgroundMode != "sunset" && st.BackgroundMode != "custom" {
+		return errors.New("pilihan latar belakang tidak valid")
+	}
+	if len(st.BackgroundImage) > 0 {
+		contentType, ok := sniffBackgroundType(st.BackgroundImage)
+		if !ok {
+			return errors.New("gambar latar tersimpan bukan PNG, JPEG, atau WebP yang valid")
+		}
+		if _, err := validateBackgroundImage(st.BackgroundImage, contentType); err != nil {
+			return err
+		}
+	}
+	if st.BackgroundMode == "custom" && len(st.BackgroundImage) == 0 {
+		return errors.New("latar kustom dipilih tanpa gambar tersimpan")
+	}
 	if err := validateSettings(st.Settings); err != nil {
 		return err
 	}
@@ -416,16 +447,18 @@ func (s *server) handleState(w http.ResponseWriter, r *http.Request) {
 		users = append(users, publicUser{ID: u.ID, Name: u.Name, Enabled: u.Enabled, CreatedAt: u.CreatedAt, Link: primary, Links: links})
 	}
 	inbounds := make([]publicInbound, 0, len(st.Inbounds)+1)
-	primaryMode := st.Settings.Mode
-	if primaryMode == "" {
-		primaryMode = "tcp"
+	if !st.PrimaryDeleted {
+		primaryMode := st.Settings.Mode
+		if primaryMode == "" {
+			primaryMode = "tcp"
+		}
+		inbounds = append(inbounds, publicInbound{
+			ID: "primary", Name: primaryInboundName(st.Settings), Enabled: st.Settings.Enabled,
+			Protocol: effectiveInboundProtocol(st.Settings), InternalPort: st.Settings.InternalPort,
+			Mode: primaryMode, NATMappings: effectiveNATMappings(st.Settings),
+			SNI: st.Settings.SNI, Dest: st.Settings.Dest, XHTTPPath: st.Settings.XHTTPPath,
+		})
 	}
-	inbounds = append(inbounds, publicInbound{
-		ID: "primary", Name: primaryInboundName(st.Settings), Enabled: st.Settings.Enabled,
-		Protocol: effectiveInboundProtocol(st.Settings), InternalPort: st.Settings.InternalPort,
-		Mode: primaryMode, NATMappings: effectiveNATMappings(st.Settings),
-		SNI: st.Settings.SNI, Dest: st.Settings.Dest, XHTTPPath: st.Settings.XHTTPPath,
-	})
 	for _, in := range st.Inbounds {
 		mode := in.Mode
 		if mode == "" && in.Protocol == "vless" {
@@ -437,7 +470,7 @@ func (s *server) handleState(w http.ResponseWriter, r *http.Request) {
 		}
 		inbounds = append(inbounds, publicInbound{ID: in.ID, Name: name, Enabled: in.Enabled, Protocol: in.Protocol, InternalPort: in.InternalPort, Mode: mode, NATMappings: in.NATMappings, SNI: in.SNI, Dest: in.Dest, XHTTPPath: in.XHTTPPath})
 	}
-	out := publicState{CSRF: csrf, Settings: st.Settings, Inbounds: inbounds, Users: users, Running: resp.Status == "active", Version: resp.Version, Uptime: resp.Uptime, CPU: resp.CPU, Load: resp.Load, RAM: resp.RAM, Logs: logs, HTTPS: isHTTPS(r)}
+	out := publicState{CSRF: csrf, Settings: st.Settings, Inbounds: inbounds, Users: users, Running: resp.Status == "active", Version: resp.Version, Uptime: resp.Uptime, CPU: resp.CPU, Load: resp.Load, RAM: resp.RAM, Disk: resp.Disk, Logs: logs, HTTPS: isHTTPS(r), BackgroundMode: st.BackgroundMode, BackgroundRevision: backgroundRevision(st.BackgroundImage)}
 	writeJSON(w, http.StatusOK, out)
 }
 func (s *server) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -544,6 +577,8 @@ func (s *server) handleAction(w http.ResponseWriter, r *http.Request) {
 		err = s.toggleUser(raw)
 	case "settings":
 		err = s.updateSettings(raw)
+	case "appearance":
+		err = s.updateAppearance(raw)
 	case "addInbound":
 		result, err = s.addInbound(raw)
 	case "deleteInbound":
@@ -571,6 +606,210 @@ func (s *server) handleAction(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, result)
 }
+
+func (s *server) handleBackground(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.authenticated(w, r); !ok {
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		s.mu.Lock()
+		data := append([]byte(nil), s.state.BackgroundImage...)
+		s.mu.Unlock()
+		if len(data) == 0 {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		contentType, _ := sniffBackgroundType(data)
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write(data)
+	case http.MethodPut:
+		r.Body = http.MaxBytesReader(w, r.Body, maxBackgroundBytes+1)
+		data, err := io.ReadAll(r.Body)
+		if err != nil || len(data) > maxBackgroundBytes {
+			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "Gambar harus berukuran maksimal 5 MB."})
+			return
+		}
+		if _, err := validateBackgroundImage(data, r.Header.Get("Content-Type")); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := s.updatePersistentState(func(st *appState) error { st.BackgroundImage = data; return nil }); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"revision": backgroundRevision(data), "status": "ok"})
+	case http.MethodDelete:
+		if err := s.updatePersistentState(func(st *appState) error { st.BackgroundImage = nil; st.BackgroundMode = "neutral"; return nil }); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	default:
+		methodNotAllowed(w)
+	}
+}
+
+func sniffBackgroundType(data []byte) (string, bool) {
+	switch {
+	case len(data) >= 8 && bytes.Equal(data[:8], []byte{137, 80, 78, 71, 13, 10, 26, 10}):
+		return "image/png", true
+	case len(data) >= 3 && data[0] == 0xff && data[1] == 0xd8 && data[2] == 0xff:
+		return "image/jpeg", true
+	case len(data) >= 12 && string(data[:4]) == "RIFF" && string(data[8:12]) == "WEBP":
+		return "image/webp", true
+	default:
+		return "", false
+	}
+}
+
+func backgroundRevision(data []byte) string {
+	if len(data) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func validateBackgroundImage(data []byte, declaredType string) (string, error) {
+	if len(data) == 0 || len(data) > maxBackgroundBytes {
+		return "", errors.New("gambar harus berukuran 1 byte–5 MB")
+	}
+	declaredType, _, err := mime.ParseMediaType(declaredType)
+	if err != nil {
+		return "", errors.New("tipe gambar tidak valid")
+	}
+	actualType, ok := sniffBackgroundType(data)
+	if !ok || actualType != declaredType {
+		return "", errors.New("gunakan file PNG, JPEG, atau WebP yang valid")
+	}
+	var width, height int
+	if actualType == "image/webp" {
+		width, height, err = webpDimensions(data)
+	} else {
+		cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+		if err != nil {
+			return "", errors.New("resolusi gambar terlalu besar atau file rusak")
+		}
+		width, height = cfg.Width, cfg.Height
+	}
+	if err != nil || width < 1 || height < 1 || width > 12000 || height > 12000 || int64(width)*int64(height) > 40000000 {
+		return "", errors.New("resolusi gambar terlalu besar atau file rusak")
+	}
+	return actualType, nil
+}
+
+func webpDimensions(data []byte) (int, int, error) {
+	if len(data) < 20 || string(data[:4]) != "RIFF" || string(data[8:12]) != "WEBP" || uint64(binary.LittleEndian.Uint32(data[4:8]))+8 != uint64(len(data)) {
+		return 0, 0, errors.New("header WebP tidak valid")
+	}
+	chunkSize := uint64(binary.LittleEndian.Uint32(data[16:20]))
+	if chunkSize > uint64(len(data)-20) {
+		return 0, 0, errors.New("chunk WebP terpotong")
+	}
+	tag := string(data[12:16])
+	switch tag {
+	case "VP8X":
+		if chunkSize < 10 || len(data) < 30 {
+			return 0, 0, errors.New("header WebP VP8X tidak lengkap")
+		}
+		offset := 20 + int(chunkSize)
+		if chunkSize%2 != 0 {
+			offset++
+		}
+		hasImage := false
+		for chunks := 0; chunks < 8 && offset+8 <= len(data); chunks++ {
+			tag := string(data[offset : offset+4])
+			length := uint64(binary.LittleEndian.Uint32(data[offset+4 : offset+8]))
+			if length > uint64(len(data)-offset-8) {
+				return 0, 0, errors.New("chunk WebP terpotong")
+			}
+			switch tag {
+			case "VP8 ", "VP8L", "ANMF":
+				hasImage = length > 0
+			case "ALPH", "ICCP", "EXIF", "XMP ", "ANIM":
+			default:
+				return 0, 0, errors.New("chunk WebP tidak didukung")
+			}
+			if hasImage {
+				break
+			}
+			offset += 8 + int(length)
+			if length%2 != 0 {
+				offset++
+			}
+		}
+		if !hasImage {
+			return 0, 0, errors.New("frame gambar WebP tidak ditemukan")
+		}
+		width := 1 + int(data[24]) + (int(data[25]) << 8) + (int(data[26]) << 16)
+		height := 1 + int(data[27]) + (int(data[28]) << 8) + (int(data[29]) << 16)
+		return width, height, nil
+	case "VP8L":
+		if chunkSize < 5 || len(data) < 25 || data[20] != 0x2f {
+			return 0, 0, errors.New("header WebP VP8L tidak lengkap")
+		}
+		width := 1 + int(data[21]) + ((int(data[22]) & 0x3f) << 8)
+		height := 1 + (int(data[22]) >> 6) + (int(data[23]) << 2) + ((int(data[24]) & 0x0f) << 10)
+		return width, height, nil
+	case "VP8 ":
+		if chunkSize < 10 || len(data) < 30 || data[23] != 0x9d || data[24] != 0x01 || data[25] != 0x2a {
+			return 0, 0, errors.New("header WebP VP8 tidak lengkap")
+		}
+		width := int(binary.LittleEndian.Uint16(data[26:28]) & 0x3fff)
+		height := int(binary.LittleEndian.Uint16(data[28:30]) & 0x3fff)
+		return width, height, nil
+	default:
+		return 0, 0, errors.New("format chunk WebP tidak didukung")
+	}
+}
+
+func (s *server) updateAppearance(raw map[string]json.RawMessage) error {
+	var mode string
+	if json.Unmarshal(raw["mode"], &mode) != nil {
+		return errors.New("latar belakang tidak valid")
+	}
+	switch mode {
+	case "neutral", "sky", "mint", "sunset":
+	case "custom":
+		s.mu.Lock()
+		hasImage := len(s.state.BackgroundImage) > 0
+		s.mu.Unlock()
+		if !hasImage {
+			return errors.New("unggah gambar kustom terlebih dahulu")
+		}
+	default:
+		return errors.New("pilihan latar belakang tidak didukung")
+	}
+	return s.updatePersistentState(func(st *appState) error { st.BackgroundMode = mode; return nil })
+}
+
+func (s *server) updatePersistentState(change func(*appState) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	data, err := json.Marshal(s.state)
+	if err != nil {
+		return err
+	}
+	var next appState
+	if err := json.Unmarshal(data, &next); err != nil {
+		return err
+	}
+	if err := change(&next); err != nil {
+		return err
+	}
+	if err := validateStoredState(next); err != nil {
+		return err
+	}
+	if err := saveState(s.statePath, next); err != nil {
+		return err
+	}
+	s.state = next
+	return nil
+}
+
 func (s *server) handleQR(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)
@@ -629,7 +868,7 @@ func (s *server) handleBackup(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	st := s.state
 	s.mu.Unlock()
-	b := backupFile{Schema: st.Schema, Settings: st.Settings, Users: st.Users, Inbounds: st.Inbounds, RealityPrivateKey: st.RealityPrivateKey, RealityPublicKey: st.RealityPublicKey, RealityShortID: st.RealityShortID}
+	b := backupFile{Schema: st.Schema, Settings: st.Settings, Users: st.Users, Inbounds: st.Inbounds, PrimaryDeleted: st.PrimaryDeleted, BackgroundMode: st.BackgroundMode, BackgroundImage: st.BackgroundImage, RealityPrivateKey: st.RealityPrivateKey, RealityPublicKey: st.RealityPublicKey, RealityShortID: st.RealityShortID}
 	data, err := json.MarshalIndent(b, "", "  ")
 	if err != nil {
 		writeError(w, 500, err)
@@ -642,10 +881,14 @@ func (s *server) handleBackup(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) addUser(raw map[string]json.RawMessage) (any, error) {
 	var in struct {
-		Name string `json:"name"`
+		Name      string `json:"name"`
+		InboundID string `json:"inboundId"`
 	}
-	if err := json.Unmarshal(raw["name"], &in.Name); err != nil {
+	if json.Unmarshal(raw["name"], &in.Name) != nil || strings.TrimSpace(in.Name) == "" {
 		return nil, errors.New("nama user wajib diisi")
+	}
+	if json.Unmarshal(raw["inboundId"], &in.InboundID) != nil || in.InboundID == "" {
+		return nil, errors.New("pilih profil/protokol untuk pengguna")
 	}
 	if err := validateUserName(in.Name); err != nil {
 		return nil, err
@@ -665,17 +908,38 @@ func (s *server) addUser(raw map[string]json.RawMessage) (any, error) {
 				return errors.New("nama user sudah digunakan")
 			}
 		}
-		for _, inbound := range st.Inbounds {
-			if inbound.Protocol == "vless" {
-				continue
+		var protocol string
+		if in.InboundID == "primary" {
+			if st.PrimaryDeleted || !st.Settings.Enabled {
+				return errors.New("profil utama tidak aktif")
 			}
-			credential, err := newProtocolCredential(inbound.Protocol)
+			protocol = effectiveInboundProtocol(st.Settings)
+			if protocol != "vless" {
+				return errors.New("pembuatan pengguna untuk protokol utama ini belum didukung")
+			}
+		} else {
+			found := false
+			for _, inbound := range st.Inbounds {
+				if inbound.ID == in.InboundID {
+					if !inbound.Enabled {
+						return errors.New("profil inbound yang dipilih sedang berhenti")
+					}
+					protocol, found = inbound.Protocol, true
+					break
+				}
+			}
+			if !found {
+				return errors.New("profil inbound tidak ditemukan")
+			}
+		}
+		if protocol != "vless" {
+			credential, err := newProtocolCredential(protocol)
 			if err != nil {
 				return err
 			}
-			credentials[inbound.ID] = credential
+			credentials[in.InboundID] = credential
 		}
-		st.Users = append(st.Users, User{ID: id, Name: in.Name, UUID: uuid, ProtocolCredentials: credentials, Enabled: true, CreatedAt: time.Now().UTC()})
+		st.Users = append(st.Users, User{ID: id, Name: in.Name, UUID: uuid, ProtocolCredentials: credentials, AssignedInboundIDs: []string{in.InboundID}, Enabled: true, CreatedAt: time.Now().UTC()})
 		return nil
 	})
 	if err != nil {
@@ -794,7 +1058,7 @@ func (s *server) addInbound(raw map[string]json.RawMessage) (any, error) {
 			managed.Mode = req.Mode
 		}
 		for i := range st.Users {
-			if req.Protocol != "vless" {
+			if req.Protocol != "vless" && st.Users[i].AssignedInboundIDs == nil {
 				c, e := newProtocolCredential(req.Protocol)
 				if e != nil {
 					return e
@@ -829,6 +1093,9 @@ func (s *server) updateInbound(raw map[string]json.RawMessage) error {
 	}
 	return s.transact(func(st *appState) error {
 		if in.ID == "primary" {
+			if st.PrimaryDeleted {
+				return errors.New("inbound tidak ditemukan")
+			}
 			st.Settings.Name = in.Name
 			st.Settings.InternalPort = in.InternalPort
 			st.Settings.NATMappings = in.NATMappings
@@ -869,6 +1136,9 @@ func (s *server) toggleInbound(raw map[string]json.RawMessage) error {
 	}
 	return s.transact(func(st *appState) error {
 		if in.ID == "primary" {
+			if st.PrimaryDeleted {
+				return errors.New("inbound tidak ditemukan")
+			}
 			st.Settings.Enabled = in.Enabled
 			return nil
 		}
@@ -888,6 +1158,20 @@ func (s *server) deleteInbound(raw map[string]json.RawMessage) error {
 		return err
 	}
 	return s.transact(func(st *appState) error {
+		if id == "primary" {
+			if st.PrimaryDeleted {
+				return errors.New("inbound tidak ditemukan")
+			}
+			st.PrimaryDeleted = true
+			st.Settings.Enabled = false
+			st.Settings.NATMappings = nil
+			st.Settings.PublicHost = ""
+			st.Settings.PublicPort = 0
+			for userIndex := range st.Users {
+				st.Users[userIndex].AssignedInboundIDs = removeInboundAssignment(st.Users[userIndex].AssignedInboundIDs, id)
+			}
+			return nil
+		}
 		for i, inbound := range st.Inbounds {
 			if inbound.ID != id {
 				continue
@@ -895,11 +1179,25 @@ func (s *server) deleteInbound(raw map[string]json.RawMessage) error {
 			st.Inbounds = append(st.Inbounds[:i], st.Inbounds[i+1:]...)
 			for userIndex := range st.Users {
 				delete(st.Users[userIndex].ProtocolCredentials, id)
+				st.Users[userIndex].AssignedInboundIDs = removeInboundAssignment(st.Users[userIndex].AssignedInboundIDs, id)
 			}
 			return nil
 		}
 		return errors.New("inbound tidak ditemukan")
 	})
+}
+
+func removeInboundAssignment(ids []string, removed string) []string {
+	if ids == nil {
+		return nil // Legacy all-profile assignments remain compatible.
+	}
+	remaining := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id != removed {
+			remaining = append(remaining, id)
+		}
+	}
+	return remaining
 }
 
 func (s *server) updateInboundMappings(raw map[string]json.RawMessage) error {
@@ -992,7 +1290,7 @@ func (s *server) restore(raw map[string]json.RawMessage) error {
 	}
 	return s.transact(func(st *appState) error {
 		hash := st.AdminHash
-		*st = appState{Schema: b.Schema, Settings: b.Settings, Users: b.Users, Inbounds: b.Inbounds, AdminHash: hash, RealityPrivateKey: b.RealityPrivateKey, RealityPublicKey: b.RealityPublicKey, RealityShortID: b.RealityShortID}
+		*st = appState{Schema: b.Schema, Settings: b.Settings, Users: b.Users, Inbounds: b.Inbounds, PrimaryDeleted: b.PrimaryDeleted, BackgroundMode: b.BackgroundMode, BackgroundImage: b.BackgroundImage, AdminHash: hash, RealityPrivateKey: b.RealityPrivateKey, RealityPublicKey: b.RealityPublicKey, RealityShortID: b.RealityShortID}
 		return validateStoredState(*st)
 	})
 }

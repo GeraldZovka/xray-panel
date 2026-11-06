@@ -10,21 +10,29 @@ assert.equal(matches.length, 1, 'expected one embedded UI script');
 const script = matches[0][1];
 new vm.Script(script, { filename: 'web/index.html:inline-script' });
 
-assert.match(html, /<option value="custom">Kustom<\/option>/, 'custom mode is selectable');
+assert.match(html, /<option value="custom">Gambar kustom<\/option>/, 'custom mode is selectable');
 assert.match(html, /id="customBackgroundFile" type="file" accept="image\/png,image\/jpeg,image\/webp"/, 'file picker restricts image formats');
 assert.match(html, /id="applyCustomBackground"[^>]*>Terapkan<\/button>/, 'apply action is present');
 assert.match(html, /id="resetCustomBackground"[^>]*>Reset<\/button>/, 'reset action is present');
 assert.match(html, /id="chooseCustomBackground"[^>]*tabindex="0"[^>]*role="button"/, 'file picker is keyboard-focusable');
-assert.match(html, /indexedDB\.open\('xray-panel-local-appearance'/, 'image storage is browser-local IndexedDB');
-assert.match(html, /\.put\(blob,'custom-background'\)/, 'image is stored locally, not sent to the panel');
-assert.match(html, /body\[data-background="custom"\].*backdrop-filter:blur\(12px\)/, 'glass styling is scoped to custom mode');
-assert.match(html, /backdrop-filter:blur\(8px\)/, 'mobile blur is reduced');
-assert.doesNotMatch(script, /FormData|fetch\([^\n]*(?:background|image)/i, 'no image upload request is implemented');
+assert.match(html, /fetch\('\/api\/background'/, 'custom image is loaded from authenticated server endpoint');
+assert.match(script, /fetch\('\/api\/background',\{method:'PUT'/, 'custom image is uploaded to server');
+assert.match(script, /api\('\/api\/background',null,'DELETE'\)/, 'custom image can be deleted server-side');
+assert.match(html, /diselaraskan ke perangkat lain/, 'appearance is described as shared across devices');
+assert.match(html, /background-size:cover/, 'background fills the page');
+assert.match(html, /rgba\(255,255,255,\.62\)/, 'custom glass surface stays visibly transparent');
+assert.match(html, /backdrop-filter:blur\(16px\) saturate\(145%\)/, 'custom mode uses visible liquid-glass styling');
+assert.match(html, /id="addProfileButton"/, 'page-level add profile action is present');
+assert.match(html, /id="refreshButton"/, 'page-level refresh action is present');
+assert.match(html, /id="newUserInbound" required/, 'new-user profile selection is mandatory');
+assert.match(script, /action:'addUser',name,inboundId/, 'new user request sends its selected profile');
+assert.match(html, /© 2026 Gerald Zovka[\s\S]*?Repositori proyek/, 'footer uses a repository credit when no LICENSE file exists');
+assert.doesNotMatch(html, /Panel lokal untuk mengelola konektivitas server/, 'old footer text is removed');
 
-const validatorLine = script.match(/^async function validateCustomImage\(file\)\{[^\n]*\}$/m)?.[0];
+const validatorLine = script.match(/^async function validateBackgroundFile\(file\)\{[^\n]*\}$/m)?.[0];
 assert.ok(validatorLine, 'image validator is present');
 let dimensions = [1920, 1080];
-const validate = vm.runInNewContext(`${validatorLine}; validateCustomImage`, {
+const validate = vm.runInNewContext(`${validatorLine}; validateBackgroundFile`, {
   imageDimensions: async () => dimensions,
 });
 (async () => {
@@ -37,7 +45,7 @@ const validate = vm.runInNewContext(`${validatorLine}; validateCustomImage`, {
   await assert.rejects(validate({ type: 'image/png', size: 1024 }), /40 megapiksel/);
   dimensions = [12001, 1];
   await assert.rejects(validate({ type: 'image/png', size: 1024 }), /12.000 px/);
-  console.log('UI appearance tests passed (syntax, local storage contract, styling scope, file validation).');
+  console.log('UI appearance tests passed (syntax, shared background API, glass styling, lifecycle controls, profile assignment, and file validation).');
 })().catch((error) => {
   console.error(error);
   process.exitCode = 1;

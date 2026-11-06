@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -31,6 +33,7 @@ type response struct {
 	CPU     string `json:"cpu,omitempty"`
 	Load    string `json:"load,omitempty"`
 	RAM     string `json:"ram,omitempty"`
+	Disk    string `json:"disk,omitempty"`
 	Logs    string `json:"logs,omitempty"`
 }
 
@@ -248,17 +251,6 @@ func status() response {
 	if len(strings.Split(version, "\n")) > 0 {
 		version = strings.Split(version, "\n")[0]
 	}
-	pidText, _ := run("/bin/systemctl", "show", "xray.service", "-p", "MainPID", "--value")
-	pid := strings.TrimSpace(pidText)
-	ram := "n/a"
-	if pid != "" && pid != "0" {
-		if b, e := os.ReadFile("/proc/" + pid + "/statm"); e == nil {
-			var total, resident uint64
-			if _, e = fmt.Sscanf(string(b), "%d %d", &total, &resident); e == nil {
-				ram = fmt.Sprintf("%.1f MiB", float64(resident)*float64(os.Getpagesize())/1024/1024)
-			}
-		}
-	}
 	activeSince, _ := run("/bin/systemctl", "show", "xray.service", "-p", "ActiveEnterTimestamp", "--value")
 	uptime := "n/a"
 	if t, e := time.Parse("Mon 2006-01-02 15:04:05 MST", strings.TrimSpace(activeSince)); e == nil {
@@ -276,8 +268,59 @@ func status() response {
 		}
 	}
 	logs, _ := run("/bin/journalctl", "-u", "xray.service", "-n", "40", "--no-pager", "-o", "cat")
-	return response{OK: true, Status: strings.TrimSpace(state), Version: version, Uptime: uptime, CPU: cpuUsage(), Load: load, RAM: ram, Logs: logs}
+	return response{OK: true, Status: strings.TrimSpace(state), Version: version, Uptime: uptime, CPU: cpuUsage(), Load: load, RAM: systemMemoryUsage(), Disk: rootDiskUsage(), Logs: logs}
 }
+
+func formatBytes(n uint64) string {
+	if n >= 1<<30 {
+		return fmt.Sprintf("%.1f GiB", float64(n)/(1<<30))
+	}
+	return fmt.Sprintf("%.0f MiB", float64(n)/(1<<20))
+}
+
+func systemMemoryUsage() string {
+	f, err := os.Open("/proc/meminfo")
+	if err != nil {
+		return "n/a"
+	}
+	defer f.Close()
+	var totalKB, availableKB uint64
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		var key string
+		var value uint64
+		if _, err := fmt.Sscanf(scanner.Text(), "%s %d kB", &key, &value); err != nil {
+			continue
+		}
+		switch key {
+		case "MemTotal:":
+			totalKB = value
+		case "MemAvailable:":
+			availableKB = value
+		}
+	}
+	if totalKB == 0 || availableKB > totalKB {
+		return "n/a"
+	}
+	used := (totalKB - availableKB) * 1024
+	total := totalKB * 1024
+	return fmt.Sprintf("%s / %s · %.0f%%", formatBytes(used), formatBytes(total), float64(used)*100/float64(total))
+}
+
+func rootDiskUsage() string {
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs("/", &stat); err != nil || stat.Blocks == 0 {
+		return "n/a"
+	}
+	total := stat.Blocks * uint64(stat.Bsize)
+	free := stat.Bavail * uint64(stat.Bsize)
+	if free > total {
+		return "n/a"
+	}
+	used := total - free
+	return fmt.Sprintf("%s / %s · %.0f%%", formatBytes(used), formatBytes(total), float64(used)*100/float64(total))
+}
+
 func cpuCounters() (total, idle uint64, ok bool) {
 	b, err := os.ReadFile("/proc/stat")
 	if err != nil {

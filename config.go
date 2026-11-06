@@ -48,6 +48,7 @@ type User struct {
 	Name                string            `json:"name"`
 	UUID                string            `json:"uuid"`
 	ProtocolCredentials map[string]string `json:"protocolCredentials,omitempty"`
+	AssignedInboundIDs  []string          `json:"assignedInboundIds,omitempty"`
 	Enabled             bool              `json:"enabled"`
 	CreatedAt           time.Time         `json:"createdAt"`
 }
@@ -84,6 +85,9 @@ type appState struct {
 	Settings          Settings         `json:"settings"`
 	Users             []User           `json:"users"`
 	Inbounds          []ManagedInbound `json:"inbounds,omitempty"`
+	PrimaryDeleted    bool             `json:"primaryDeleted,omitempty"`
+	BackgroundMode    string           `json:"backgroundMode,omitempty"`
+	BackgroundImage   []byte           `json:"backgroundImage,omitempty"`
 	AdminHash         string           `json:"adminHash"`
 	RealityPrivateKey string           `json:"realityPrivateKey"`
 	RealityPublicKey  string           `json:"realityPublicKey"`
@@ -257,11 +261,10 @@ func validateSettings(s Settings) error {
 
 func validateManagedInbounds(st appState) error {
 	seenIDs := map[string]bool{}
-	seenIDs["primary"] = true
-	seenPorts := map[int]bool{st.Settings.InternalPort: true}
-	activeCount := 0
-	if st.Settings.Enabled {
-		activeCount++
+	seenPorts := map[int]bool{}
+	if !st.PrimaryDeleted {
+		seenIDs["primary"] = true
+		seenPorts[st.Settings.InternalPort] = true
 	}
 
 	if addr := os.Getenv("PANEL_ADDR"); addr != "" {
@@ -276,11 +279,13 @@ func validateManagedInbounds(st appState) error {
 	}
 	seenMappings := map[string]bool{}
 	mappingCount := 0
-	for _, mapping := range effectiveNATMappings(st.Settings) {
-		if err := addValidatedMapping(seenMappings, mapping); err != nil {
-			return err
+	if !st.PrimaryDeleted {
+		for _, mapping := range effectiveNATMappings(st.Settings) {
+			if err := addValidatedMapping(seenMappings, mapping); err != nil {
+				return err
+			}
+			mappingCount++
 		}
-		mappingCount++
 	}
 	for _, in := range st.Inbounds {
 		if !inboundIDRE.MatchString(in.ID) || seenIDs[in.ID] {
@@ -294,9 +299,6 @@ func validateManagedInbounds(st appState) error {
 			if err := validateUserName(in.Name); err != nil {
 				return fmt.Errorf("nama inbound tidak valid: %w", err)
 			}
-		}
-		if in.Enabled {
-			activeCount++
 		}
 		if !validPort(in.InternalPort) || seenPorts[in.InternalPort] {
 			return fmt.Errorf("port internal inbound %s tidak valid atau bertabrakan", in.Protocol)
@@ -332,11 +334,31 @@ func validateManagedInbounds(st appState) error {
 	if mappingCount > 8 {
 		return errors.New("maksimal 8 mapping Xray; satu dari 9 mapping total dicadangkan untuk panel")
 	}
-	if activeCount == 0 {
-		return errors.New("minimal satu inbound harus tetap aktif")
-	}
 	for _, user := range st.Users {
+		assigned := make(map[string]bool, len(user.AssignedInboundIDs))
+		for _, id := range user.AssignedInboundIDs {
+			if assigned[id] {
+				return fmt.Errorf("profil inbound pengguna %q terduplikasi", user.Name)
+			}
+			assigned[id] = true
+			if id == "primary" && !st.PrimaryDeleted {
+				continue
+			}
+			found := false
+			for _, in := range st.Inbounds {
+				if in.ID == id {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf("profil inbound pengguna %q tidak ditemukan", user.Name)
+			}
+		}
 		for _, in := range st.Inbounds {
+			if !userAssignedToInbound(user, in.ID) {
+				continue
+			}
 			if in.Protocol == "vless" {
 				if _, err := parseUUID(user.UUID); err != nil {
 					return fmt.Errorf("UUID VLESS pengguna %q tidak valid", user.Name)
@@ -479,7 +501,7 @@ func buildXrayConfig(s appState) ([]byte, error) {
 		return nil, err
 	}
 	inbounds := make([]any, 0, len(s.Inbounds)+1)
-	if s.Settings.Enabled {
+	if s.Settings.Enabled && !s.PrimaryDeleted {
 		primary, err := buildPrimaryInbound(s)
 		if err != nil {
 			return nil, err
@@ -647,7 +669,7 @@ type publicLink struct {
 }
 
 func makeVLESSLinks(s appState, u User) []publicLink {
-	if !s.Settings.Enabled || effectiveInboundProtocol(s.Settings) != "vless" {
+	if s.PrimaryDeleted || !s.Settings.Enabled || !userAssignedToInbound(u, "primary") || effectiveInboundProtocol(s.Settings) != "vless" {
 		return nil
 	}
 	links := make([]publicLink, 0, len(effectiveNATMappings(s.Settings)))
@@ -664,7 +686,7 @@ func makeVLESSLinks(s appState, u User) []publicLink {
 func makeUserLinks(s appState, user User) []publicLink {
 	links := makeVLESSLinks(s, user)
 	for _, in := range s.Inbounds {
-		if !in.Enabled {
+		if !in.Enabled || !userAssignedToInbound(user, in.ID) {
 			continue
 		}
 		for mappingIndex, endpoint := range in.NATMappings {
@@ -680,6 +702,18 @@ func makeUserLinks(s appState, user User) []publicLink {
 		}
 	}
 	return links
+}
+
+func userAssignedToInbound(user User, inboundID string) bool {
+	if user.AssignedInboundIDs == nil {
+		return true // Existing schema-1 users retain their legacy access to every profile.
+	}
+	for _, id := range user.AssignedInboundIDs {
+		if id == inboundID {
+			return true
+		}
+	}
+	return false
 }
 
 func makeManagedLink(in ManagedInbound, user User, host string, port int) (string, error) {

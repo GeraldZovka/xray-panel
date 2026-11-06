@@ -641,8 +641,18 @@ func TestLegacySettingsDefaultEnabledAndPrimaryCanBeStoppedIndependently(t *test
 		t.Fatalf("stopped primary was not omitted while secondary stayed active: %#v", inbounds)
 	}
 	s.Inbounds[0].Enabled = false
-	if err := validateManagedInbounds(s); err == nil {
-		t.Fatal("allowed all inbound profiles to be stopped")
+	if err := validateManagedInbounds(s); err != nil {
+		t.Fatalf("stopping all inbound profiles should be valid: %v", err)
+	}
+	cfg, err = buildXrayConfig(s)
+	if err != nil {
+		t.Fatalf("empty inbound config was rejected: %v", err)
+	}
+	if err := json.Unmarshal(cfg, &got); err != nil {
+		t.Fatal(err)
+	}
+	if inbounds, ok := got["inbounds"].([]any); !ok || len(inbounds) != 0 {
+		t.Fatalf("all-stopped config inbounds = %#v, want empty array", got["inbounds"])
 	}
 }
 
