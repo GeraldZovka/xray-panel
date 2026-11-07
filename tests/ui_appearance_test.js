@@ -32,6 +32,8 @@ assert.match(html, /id="addInboundDialog"/, 'top-level add profile opens a dialo
 assert.doesNotMatch(html, /id="addInboundPanel"|id="refreshButton"/, 'lower add accordion and page-level refresh control are removed');
 assert.match(script, /action:'reloadInbound',id:item\.id/, 'each inbound card can request a profile reload');
 assert.match(script, /semua koneksi klien pada seluruh profil aktif dapat terputus sesaat/i, 'reload confirmation warns that the shared Xray daemon can interrupt all active profiles');
+assert.ok(script.includes("if(!confirm(tr('Pemulihan akan menimpa pengguna, profil, gambar latar, dan pengaturan saat ini. Lanjutkan?')))return;"), 'backup restore confirmation follows the selected language');
+assert.ok(script.includes("if(!confirm(tr('Perbarui Xray? Layanan dapat terputus sesaat.')))return;"), 'Xray update confirmation follows the selected language');
 assert.match(html, /id="newUserInbound" required/, 'new-user profile selection is mandatory');
 assert.match(script, /action:'addUser',name,inboundId/, 'new user request sends its selected profile');
 assert.match(html, /© 2026 Gerald Zovka[\s\S]*?Repositori proyek/, 'footer uses a repository credit when no LICENSE file exists');
